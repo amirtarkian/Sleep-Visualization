@@ -1,0 +1,51 @@
+@import "tailwindcss";
+
+@theme {
+  --color-slate-950: #0f172a;
+  --color-slate-900: #1e293b;
+  --color-slate-800: #334155;
+  --color-slate-700: #475569;
+  --color-slate-400: #94a3b8;
+  --color-slate-300: #cbd5e1;
+  --color-slate-100: #f1f5f9;
+
+  --color-stage-awake: #ef4444;
+  --color-stage-rem: #a78bfa;
+  --color-stage-core: #60a5fa;
+  --color-stage-deep: #1e40af;
+
+  --color-score-excellent: #22c55e;
+  --color-score-good: #3b82f6;
+  --color-score-fair: #eab308;
+  --color-score-poor: #f97316;
+  --color-score-very-poor: #ef4444;
+
+  --color-glass: rgba(30, 41, 59, 0.6);
+  --color-glass-border: rgba(71, 85, 105, 0.4);
+}
+
+html {
+  color-scheme: dark;
+}
+
+body {
+  margin: 0;
+  font-family: system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+@keyframes fade-in {
+  from { opacity: 0; transform: translateY(8px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+.animate-fade-in {
+  animation: fade-in 0.4s ease-out both;
+}
+
+.glass {
+  background: var(--color-glass);
+  border: 1px solid var(--color-glass-border);
+  backdrop-filter: blur(12px);
+}
