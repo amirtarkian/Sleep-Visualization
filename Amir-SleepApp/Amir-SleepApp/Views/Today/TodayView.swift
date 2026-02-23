@@ -8,17 +8,41 @@ struct TodayView: View {
 
     private var latestSession: SleepSession? { sessions.first }
 
+    private var greeting: (title: String, subtitle: String) {
+        let hour = Calendar.current.component(.hour, from: Date())
+        switch hour {
+        case 5..<12:
+            return ("Good morning, Amir", "Here's how you slept last night")
+        case 12..<17:
+            return ("Good afternoon, Amir", "Your sleep at a glance")
+        case 17..<21:
+            return ("Good evening, Amir", "Wind down and review your sleep")
+        default:
+            return ("Good night, Amir", "Time to rest — here's your sleep summary")
+        }
+    }
+
     var body: some View {
         NavigationStack {
             ScrollView {
                 if let session = latestSession {
                     VStack(spacing: 24) {
+                        VStack(spacing: 4) {
+                            Text(greeting.title)
+                                .font(.title2.bold())
+                                .foregroundStyle(AppTheme.textPrimary)
+                            Text(greeting.subtitle)
+                                .font(.subheadline)
+                                .foregroundStyle(AppTheme.textSecondary)
+                        }
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(.top, 8)
+
                         ScoreRing(
                             score: session.score.overall,
                             label: getScoreInfo(session.score.overall).label,
                             size: 220
                         )
-                        .padding(.top, 20)
 
                         lastNightCard(session)
                         SubScoreBars(score: session.score)

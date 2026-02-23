@@ -10,6 +10,19 @@ import { DateRangeSelector } from './DateRangeSelector'
 import { Card } from '../layout/Card'
 import { getScoreInfo } from '../../lib/constants'
 
+function getGreeting(): { title: string; subtitle: string } {
+  const hour = new Date().getHours()
+  if (hour >= 5 && hour < 12) {
+    return { title: 'Good morning, Amir', subtitle: 'Here\'s how you slept last night' }
+  } else if (hour >= 12 && hour < 17) {
+    return { title: 'Good afternoon, Amir', subtitle: 'Your sleep at a glance' }
+  } else if (hour >= 17 && hour < 21) {
+    return { title: 'Good evening, Amir', subtitle: 'Wind down and review your sleep' }
+  } else {
+    return { title: 'Good night, Amir', subtitle: 'Time to rest — here\'s your sleep summary' }
+  }
+}
+
 interface DashboardProps {
   onNavigateImport: () => void
   onSelectNight: (nightDate: string) => void
@@ -19,6 +32,7 @@ export function Dashboard({ onNavigateImport, onSelectNight }: DashboardProps) {
   const { dateRange, setDateRange } = useDateRange('30d')
   const sessions = useSleepData(dateRange)
   const trends = useTrends(sessions)
+  const greeting = getGreeting()
 
   if (sessions.length === 0) {
     return (
@@ -38,7 +52,7 @@ export function Dashboard({ onNavigateImport, onSelectNight }: DashboardProps) {
 
   return (
     <div className="space-y-6">
-      <Section title="Dashboard" subtitle="Your sleep at a glance">
+      <Section title={greeting.title} subtitle={greeting.subtitle}>
         <div className="flex items-center justify-between mb-4">
           <DateRangeSelector value={dateRange} onChange={setDateRange} />
           <span className="text-xs text-slate-500">{sessions.length} nights</span>
