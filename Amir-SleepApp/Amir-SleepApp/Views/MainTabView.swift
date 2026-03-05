@@ -21,6 +21,9 @@ struct MainTabView: View {
             Tab("Reports", systemImage: "chart.bar.doc.horizontal") {
                 ReportsView()
             }
+            Tab("Goals", systemImage: "target") {
+                GoalsView()
+            }
             Tab("Settings", systemImage: "gearshape.fill") {
                 SettingsView()
             }
