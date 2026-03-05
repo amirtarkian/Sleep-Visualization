@@ -1,9 +1,13 @@
-import { useState, useCallback } from 'react'
+import { useState } from 'react'
 import { AppShell } from './components/layout/AppShell'
 import { Dashboard } from './components/dashboard/Dashboard'
+import { CoachingTips } from './components/dashboard/CoachingTips'
 import { NightDetail } from './components/detail/NightDetail'
 import { TrendsView } from './components/trends/TrendsView'
 import { StageDistribution } from './components/stages/StageDistribution'
+import { ReadinessPanel } from './components/readiness/ReadinessPanel'
+import { ReportsView } from './components/reports/ReportsView'
+import { GoalsView } from './components/goals/GoalsView'
 import { SignIn } from './components/auth/SignIn'
 import { useAuth } from './hooks/useAuth'
 import { useSupabaseSessions } from './hooks/useSupabaseSessions'
@@ -27,13 +31,16 @@ function App() {
   return (
     <AppShell activeSection={activeSection} onNavigate={setActiveSection} onSignOut={signOut}>
       {activeSection === 'dashboard' && (
-        <Dashboard
-          sessions={sessions}
-          loading={loading}
-          dateRange={dateRange}
-          onDateRangeChange={setDateRange}
-          onSelectNight={handleSelectNight}
-        />
+        <>
+          <Dashboard
+            sessions={sessions}
+            loading={loading}
+            dateRange={dateRange}
+            onDateRangeChange={setDateRange}
+            onSelectNight={handleSelectNight}
+          />
+          {!loading && sessions.length > 0 && <CoachingTips sessions={sessions} />}
+        </>
       )}
       {activeSection === 'detail' && (
         <NightDetail
@@ -47,6 +54,9 @@ function App() {
           <StageDistribution sessions={sessions} />
         </>
       )}
+      {activeSection === 'readiness' && <ReadinessPanel />}
+      {activeSection === 'reports' && <ReportsView sessions={sessions} />}
+      {activeSection === 'goals' && <GoalsView sessions={sessions} />}
     </AppShell>
   )
 }
