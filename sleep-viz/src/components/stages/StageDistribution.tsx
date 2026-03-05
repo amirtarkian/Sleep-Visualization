@@ -1,16 +1,18 @@
-import { useSleepData } from '../../hooks/useSleepData'
 import { Section } from '../layout/Section'
 import { Card } from '../layout/Card'
 import { WeeklySummaryCard } from './WeeklySummaryCard'
 import { RecommendedRanges } from './RecommendedRanges'
+import type { SleepSession } from '../../providers/types'
 
-export function StageDistribution() {
-  const sessions = useSleepData('30d')
+interface StageDistributionProps {
+  sessions: SleepSession[]
+}
 
+export function StageDistribution({ sessions }: StageDistributionProps) {
   if (sessions.length === 0) return null
 
   // Split into weekly buckets
-  const weeks: Array<{ label: string; sessions: typeof sessions }> = []
+  const weeks: Array<{ label: string; sessions: SleepSession[] }> = []
   const sorted = [...sessions].sort((a, b) => a.nightDate.localeCompare(b.nightDate))
 
   let weekStart = 0

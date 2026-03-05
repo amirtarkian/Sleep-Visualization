@@ -1,20 +1,23 @@
 import { type ReactNode, useState } from 'react'
-import { Moon, BarChart3, Calendar, TrendingUp, Upload, Menu, X } from 'lucide-react'
+import { Moon, BarChart3, Calendar, TrendingUp, Heart, FileText, Target, Menu, X, LogOut } from 'lucide-react'
 
 interface AppShellProps {
   children: ReactNode
   activeSection: string
   onNavigate: (section: string) => void
+  onSignOut: () => void
 }
 
 const NAV_ITEMS = [
   { id: 'dashboard', label: 'Dashboard', icon: BarChart3 },
   { id: 'detail', label: 'Night Detail', icon: Calendar },
   { id: 'trends', label: 'Trends', icon: TrendingUp },
-  { id: 'import', label: 'Import', icon: Upload },
+  { id: 'readiness', label: 'Readiness', icon: Heart },
+  { id: 'reports', label: 'Reports', icon: FileText },
+  { id: 'goals', label: 'Goals', icon: Target },
 ]
 
-export function AppShell({ children, activeSection, onNavigate }: AppShellProps) {
+export function AppShell({ children, activeSection, onNavigate, onSignOut }: AppShellProps) {
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false)
 
   return (
@@ -44,6 +47,13 @@ export function AppShell({ children, activeSection, onNavigate }: AppShellProps)
                   {item.label}
                 </button>
               ))}
+              <button
+                onClick={onSignOut}
+                className="flex items-center gap-2 rounded-lg px-3 py-2 text-sm font-medium text-slate-400 hover:text-slate-200 hover:bg-slate-800/50 transition-colors ml-2"
+              >
+                <LogOut className="h-4 w-4" />
+                Sign Out
+              </button>
             </nav>
 
             {/* Mobile menu button */}
@@ -73,6 +83,13 @@ export function AppShell({ children, activeSection, onNavigate }: AppShellProps)
                 {item.label}
               </button>
             ))}
+            <button
+              onClick={() => { onSignOut(); setMobileMenuOpen(false) }}
+              className="flex w-full items-center gap-2 rounded-lg px-3 py-2 text-sm font-medium text-slate-400 hover:text-slate-200 transition-colors"
+            >
+              <LogOut className="h-4 w-4" />
+              Sign Out
+            </button>
           </nav>
         )}
       </header>
