@@ -154,7 +154,7 @@ enum ReportEngine {
         for session in sessions {
             if let date = dateFormatter.date(from: session.nightDate) {
                 let weekday = calendar.component(.weekday, from: date)
-                let isWeekend = (weekday == 1 || weekday == 6 || weekday == 7) // Sun, Fri, Sat nights
+                let isWeekend = (weekday == 1 || weekday == 7) // Sun = 1, Sat = 7
                 if isWeekend {
                     weekendScores.append(session.score.overall)
                 } else {
@@ -256,18 +256,20 @@ enum ReportEngine {
         let labelFormatter = DateFormatter()
         labelFormatter.dateFormat = "MMM d"
 
-        // Group sessions by week of year
-        var weekBuckets: [Int: [SleepSession]] = [:]
-        var weekStartDates: [Int: Date] = [:]
+        // Group sessions by (year, weekOfYear) to handle year boundaries
+        struct YearWeek: Hashable { let year: Int; let week: Int }
+        var weekBuckets: [YearWeek: [SleepSession]] = [:]
+        var weekStartDates: [YearWeek: Date] = [:]
 
         for session in sessions {
             guard let date = dateFormatter.date(from: session.nightDate) else { continue }
-            let weekOfYear = calendar.component(.weekOfYear, from: date)
-            weekBuckets[weekOfYear, default: []].append(session)
-            if weekStartDates[weekOfYear] == nil {
-                weekStartDates[weekOfYear] = date
-            } else if let existing = weekStartDates[weekOfYear], date < existing {
-                weekStartDates[weekOfYear] = date
+            let components = calendar.dateComponents([.yearForWeekOfYear, .weekOfYear], from: date)
+            let key = YearWeek(year: components.yearForWeekOfYear ?? 0, week: components.weekOfYear ?? 0)
+            weekBuckets[key, default: []].append(session)
+            if weekStartDates[key] == nil {
+                weekStartDates[key] = date
+            } else if let existing = weekStartDates[key], date < existing {
+                weekStartDates[key] = date
             }
         }
 
