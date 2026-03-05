@@ -65,14 +65,16 @@ struct SettingsView: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 16) {
                 Text("Sleep Score").font(.title2.bold())
-                Text("Your sleep score (0-100) is computed from six weighted sub-scores:").foregroundStyle(AppTheme.textSecondary)
+                Text("Your sleep score (0-100) is computed from eight weighted sub-scores:").foregroundStyle(AppTheme.textSecondary)
                 ForEach([
-                    ("Duration (25%)", "7-9 hours is ideal"),
-                    ("Efficiency (20%)", "90%+ time asleep vs in bed"),
-                    ("Deep Sleep (20%)", "15-25% of total sleep"),
-                    ("REM Sleep (15%)", "20-30% of total sleep"),
-                    ("Latency (10%)", "15 minutes or less to fall asleep"),
-                    ("WASO (10%)", "10 minutes or less awake after falling asleep"),
+                    ("Duration (30%)", "7-9 hours is ideal"),
+                    ("Efficiency (15%)", "85%+ time asleep vs in bed"),
+                    ("Deep Sleep (12%)", "10-25% of total sleep"),
+                    ("REM Sleep (10%)", "20-25% of total sleep"),
+                    ("Latency (8%)", "10-20 minutes to fall asleep is optimal"),
+                    ("WASO (8%)", "20 minutes or less awake after falling asleep"),
+                    ("Timing (8%)", "Sleep midpoint between midnight and 3AM"),
+                    ("Restoration (9%)", "Heart rate drops 10%+ below resting during sleep"),
                 ], id: \.0) { item in
                     VStack(alignment: .leading, spacing: 4) {
                         Text(item.0).font(.subheadline.bold())

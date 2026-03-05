@@ -49,6 +49,22 @@ final class SyncManager {
 
                 let stats = SessionBuilder.computeStats(startDate: sessionStart, endDate: sessionEnd, stages: stages)
 
+                let biometrics = await fetchBiometrics(from: sessionStart, to: sessionEnd)
+
+                // Compute sleep midpoint as minutes from midnight
+                let midpoint = sessionStart.addingTimeInterval(sessionEnd.timeIntervalSince(sessionStart) / 2)
+                let midpointComponents = Calendar.current.dateComponents([.hour, .minute], from: midpoint)
+                let midpointHour = midpointComponents.hour ?? 0
+                let midpointMinute = midpointComponents.minute ?? 0
+                let rawMinutes = Double(midpointHour * 60 + midpointMinute)
+                // Normalize: hours after midnight are 0+, hours before midnight (e.g. 11PM = 23:00) become negative
+                let midpointMinutesFromMidnight = rawMinutes <= 720 ? rawMinutes : rawMinutes - 1440
+
+                // Fetch resting HR for restoration sub-score
+                let restingHRStart = Calendar.current.date(byAdding: .day, value: -7, to: sessionStart)!
+                let restingHRSamples = (try? await healthKit.fetchRestingHeartRate(from: restingHRStart, to: sessionEnd)) ?? []
+                let restingHR = restingHRSamples.isEmpty ? 0 : restingHRSamples.map(\.value).reduce(0, +) / Double(restingHRSamples.count)
+
                 let score = SleepScoringEngine.computeSleepScore(
                     totalSleepTime: stats.totalSleepTime,
                     sleepEfficiency: stats.sleepEfficiency,
@@ -56,10 +72,11 @@ final class SyncManager {
                     remPercent: stats.remPercent,
                     sleepLatency: stats.sleepLatency,
                     waso: stats.waso,
-                    hasStages: !stages.isEmpty
+                    hasStages: !stages.isEmpty,
+                    midpointMinutesFromMidnight: midpointMinutesFromMidnight,
+                    sleepingHR: biometrics.avgHeartRate ?? 0,
+                    restingHR: restingHR
                 )
-
-                let biometrics = await fetchBiometrics(from: sessionStart, to: sessionEnd)
 
                 let session = SleepSession(
                     nightDate: nightDate,
