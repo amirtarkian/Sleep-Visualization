@@ -93,6 +93,8 @@ export function computeSleepScore(session: {
     rem: Math.round(rem),
     latency: Math.round(latency),
     waso: Math.round(waso),
+    timing: 0,
+    restoration: 0,
     isFallback: !hasStages,
   }
 }

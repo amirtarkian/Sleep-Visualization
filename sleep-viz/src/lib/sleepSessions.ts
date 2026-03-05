@@ -83,7 +83,7 @@ export function groupIntoSessions(
       sourceNames,
       ...stats,
       ...bioSummary,
-      score: { overall: 0, duration: 0, efficiency: 0, deepSleep: 0, rem: 0, latency: 0, waso: 0, isFallback: false },
+      score: { overall: 0, duration: 0, efficiency: 0, deepSleep: 0, rem: 0, latency: 0, waso: 0, timing: 0, restoration: 0, isFallback: false },
     }
 
     session.score = computeSleepScore(session)

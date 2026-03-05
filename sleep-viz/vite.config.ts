@@ -9,7 +9,7 @@ export default defineConfig({
       output: {
         manualChunks: {
           recharts: ['recharts'],
-          vendor: ['react', 'react-dom', 'dexie', 'dexie-react-hooks', 'date-fns'],
+          vendor: ['react', 'react-dom', '@supabase/supabase-js', 'date-fns'],
         },
       },
     },
