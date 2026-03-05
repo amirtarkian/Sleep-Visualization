@@ -3,12 +3,43 @@ import SwiftData
 
 struct SettingsView: View {
     @Environment(SyncManager.self) private var syncManager
+    @Environment(SupabaseService.self) private var supabaseService
     @Environment(\.modelContext) private var modelContext
+    @Query private var allSessions: [SleepSession]
     @State private var showClearConfirmation = false
+    @State private var showSignOutConfirmation = false
+    @State private var showResyncConfirmation = false
+    @State private var isResyncInProgress = false
 
     var body: some View {
         NavigationStack {
             List {
+                // MARK: - Account
+                Section("Account") {
+                    if supabaseService.isAuthenticated {
+                        HStack {
+                            Label("Email", systemImage: "person.circle")
+                            Spacer()
+                            Text(supabaseService.userEmail ?? "Unknown")
+                                .foregroundStyle(AppTheme.textSecondary)
+                                .lineLimit(1)
+                        }
+                        Button(role: .destructive) {
+                            showSignOutConfirmation = true
+                        } label: {
+                            Label("Sign Out", systemImage: "rectangle.portrait.and.arrow.right")
+                        }
+                    } else {
+                        HStack {
+                            Label("Status", systemImage: "person.circle")
+                            Spacer()
+                            Text("Not signed in")
+                                .foregroundStyle(AppTheme.textTertiary)
+                        }
+                    }
+                }
+
+                // MARK: - Health Data
                 Section("Health Data") {
                     HStack {
                         Label("HealthKit", systemImage: "heart.fill")
@@ -35,6 +66,45 @@ struct SettingsView: View {
                     }
                     .disabled(syncManager.isSyncing)
                 }
+
+                // MARK: - Supabase Sync Status
+                if supabaseService.isAuthenticated {
+                    Section("Cloud Sync") {
+                        HStack {
+                            Label("Sessions Synced", systemImage: "cloud.fill")
+                            Spacer()
+                            Text("\(allSessions.count)")
+                                .foregroundStyle(AppTheme.textSecondary)
+                        }
+                        HStack {
+                            Label("Last Push", systemImage: "arrow.up.circle")
+                            Spacer()
+                            if let date = syncManager.lastSyncDate {
+                                Text(date, style: .relative)
+                                    .foregroundStyle(AppTheme.textSecondary)
+                            } else {
+                                Text("Never")
+                                    .foregroundStyle(AppTheme.textTertiary)
+                            }
+                        }
+                        Button {
+                            showResyncConfirmation = true
+                        } label: {
+                            if isResyncInProgress {
+                                HStack {
+                                    ProgressView()
+                                        .controlSize(.small)
+                                    Text("Resyncing...")
+                                }
+                            } else {
+                                Label("Force Resync", systemImage: "arrow.clockwise.circle")
+                            }
+                        }
+                        .disabled(isResyncInProgress || syncManager.isSyncing)
+                    }
+                }
+
+                // MARK: - Scoring
                 Section("Scoring") {
                     NavigationLink {
                         scoringInfoView
@@ -42,11 +112,15 @@ struct SettingsView: View {
                         Label("How Scoring Works", systemImage: "info.circle")
                     }
                 }
+
+                // MARK: - Data
                 Section("Data") {
                     Button(role: .destructive) { showClearConfirmation = true } label: {
                         Label("Clear Cached Data", systemImage: "trash")
                     }
                 }
+
+                // MARK: - About
                 Section("About") {
                     HStack { Text("Version"); Spacer(); Text("1.0.0").foregroundStyle(AppTheme.textSecondary) }
                 }
@@ -57,6 +131,22 @@ struct SettingsView: View {
                 Button("Clear Data", role: .destructive) { clearAllData() }
             } message: {
                 Text("This removes cached scores and sessions. Data can be re-synced from HealthKit.")
+            }
+            .confirmationDialog("Sign out?", isPresented: $showSignOutConfirmation) {
+                Button("Sign Out", role: .destructive) {
+                    Task {
+                        try? await supabaseService.signOut()
+                    }
+                }
+            } message: {
+                Text("You will need to sign in again to sync data to the cloud.")
+            }
+            .confirmationDialog("Force resync all data?", isPresented: $showResyncConfirmation) {
+                Button("Resync", role: .destructive) {
+                    Task { await forceResync() }
+                }
+            } message: {
+                Text("This will clear all cached data and re-sync from HealthKit, then push to Supabase.")
             }
         }
     }
@@ -105,5 +195,21 @@ struct SettingsView: View {
         try? modelContext.delete(model: SleepSession.self)
         try? modelContext.delete(model: ReadinessRecord.self)
         try? modelContext.save()
+    }
+
+    private func forceResync() async {
+        isResyncInProgress = true
+
+        // Clear all local data
+        clearAllData()
+
+        // Reset the last sync date so SyncManager fetches the full 90-day window
+        syncManager.lastSyncDate = nil
+        UserDefaults.standard.removeObject(forKey: "lastSyncDate")
+
+        // Re-sync from HealthKit (which also pushes to Supabase)
+        await syncManager.sync(modelContext: modelContext)
+
+        isResyncInProgress = false
     }
 }
