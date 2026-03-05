@@ -44,14 +44,20 @@ enum CoachingEngine {
         }
         // Inconsistent bedtime (std dev > 60 min over 5+ nights)
         if recent7.count >= 5 {
-            let bedtimes = recent7.map { s -> Double in
-                let c = Calendar.current
-                let h = c.component(.hour, from: s.startDate)
-                let m = c.component(.minute, from: s.startDate)
-                return Double(h < 12 ? h * 60 + m + 1440 : h * 60 + m)
+            let bedtimes: [Double] = recent7.map { s in
+                let cal = Calendar.current
+                let h = cal.component(.hour, from: s.startDate)
+                let m = cal.component(.minute, from: s.startDate)
+                let totalMin = h * 60 + m
+                return Double(h < 12 ? totalMin + 1440 : totalMin)
             }
-            let mean = bedtimes.reduce(0, +) / Double(bedtimes.count)
-            let stdDev = sqrt(bedtimes.reduce(0) { $0 + ($1 - mean) * ($1 - mean) } / Double(bedtimes.count))
+            let count = Double(bedtimes.count)
+            let mean = bedtimes.reduce(0.0, +) / count
+            let variance: Double = bedtimes.reduce(0.0) { acc, val in
+                let diff = val - mean
+                return acc + diff * diff
+            } / count
+            let stdDev = sqrt(variance)
             if stdDev > 60 {
                 tips.append(.init(id: "inconsistent", title: "Inconsistent Bedtime",
                     message: "Your bedtime varies by over an hour. A consistent schedule helps your circadian rhythm.",
