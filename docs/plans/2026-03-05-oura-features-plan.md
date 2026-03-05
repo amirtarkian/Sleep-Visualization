@@ -1,1884 +1,768 @@
-# Oura-Like Features Implementation Plan
+# Health Dashboard Implementation Plan — Revised
 
 > **For Claude:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement this plan task-by-task.
 
-**Goal:** Add readiness scoring (PWA), daily coaching tips, weekly/monthly reports, and sleep goal tracking to both the PWA and iOS apps.
+**Goal:** Add Supabase backend, update scoring algorithm to industry best practices, refactor PWA to read-only dashboard, add coaching tips / reports / goals to both apps.
 
-**Architecture:** Pure client-side features. New scoring/analysis logic as pure functions (TS) and static methods (Swift). New Dexie tables (PWA) and SwiftData models (iOS) for goals and reports. No backend needed.
+**Architecture:** iOS reads HealthKit → computes scores → pushes to Supabase Postgres. PWA reads from Supabase via realtime subscriptions. Apple Sign-In auth. Row Level Security.
 
-**Tech Stack:** React/TypeScript/Dexie/Recharts (PWA), SwiftUI/SwiftData/Swift Charts (iOS), Vitest (testing)
-
----
-
-### Task 1: PWA Readiness Engine — Tests
-
-**Files:**
-- Create: `sleep-viz/src/test/readinessScore.test.ts`
-
-**Step 1: Write failing tests for the readiness scoring functions**
-
-```typescript
-import { describe, it, expect } from 'vitest';
-import { scoreHRV, scoreRestingHR, computeReadinessScore, computeBaseline } from '../lib/readinessScore';
-
-describe('scoreHRV', () => {
-  it('returns 100 when current is 15%+ above baseline', () => {
-    expect(scoreHRV(46, 40)).toBe(100);
-  });
-
-  it('returns 40 when current is 15%+ below baseline', () => {
-    expect(scoreHRV(34, 40)).toBe(40);
-  });
-
-  it('returns ~70 when current equals baseline', () => {
-    expect(scoreHRV(40, 40)).toBe(70);
-  });
-
-  it('returns ~85 when current is 7.5% above baseline', () => {
-    const score = scoreHRV(43, 40);
-    expect(score).toBeGreaterThanOrEqual(83);
-    expect(score).toBeLessThanOrEqual(87);
-  });
-
-  it('returns ~55 when current is 7.5% below baseline', () => {
-    const score = scoreHRV(37, 40);
-    expect(score).toBeGreaterThanOrEqual(53);
-    expect(score).toBeLessThanOrEqual(57);
-  });
-
-  it('returns 70 when baseline is 0 (avoids division by zero)', () => {
-    expect(scoreHRV(40, 0)).toBe(70);
-  });
-});
-
-describe('scoreRestingHR', () => {
-  it('returns 100 when current is 5+ bpm below baseline', () => {
-    expect(scoreRestingHR(55, 65)).toBe(100);
-  });
-
-  it('returns 40 when current is 5+ bpm above baseline', () => {
-    expect(scoreRestingHR(70, 65)).toBe(40);
-  });
-
-  it('returns 80 when current equals baseline', () => {
-    expect(scoreRestingHR(65, 65)).toBe(80);
-  });
-});
-
-describe('computeReadinessScore', () => {
-  it('computes weighted composite (50% HRV, 30% RHR, 20% Sleep)', () => {
-    // HRV=100, RHR=100, Sleep=100 → 100
-    const score = computeReadinessScore(46, 40, 55, 65, 100);
-    expect(score).toBe(100);
-  });
-
-  it('handles mixed scores', () => {
-    // HRV=70, RHR=80, Sleep=75 → 0.5*70 + 0.3*80 + 0.2*75 = 35+24+15 = 74
-    const score = computeReadinessScore(40, 40, 65, 65, 75);
-    expect(score).toBe(74);
-  });
-
-  it('clamps to 0-100 range', () => {
-    expect(computeReadinessScore(100, 40, 50, 65, 100)).toBeLessThanOrEqual(100);
-    expect(computeReadinessScore(10, 40, 80, 65, 0)).toBeGreaterThanOrEqual(0);
-  });
-});
-
-describe('computeBaseline', () => {
-  it('returns average of values', () => {
-    expect(computeBaseline([40, 42, 38, 44, 36])).toBe(40);
-  });
-
-  it('uses only last 14 values', () => {
-    const values = Array(20).fill(50);
-    values.push(100); // most recent
-    const baseline = computeBaseline(values);
-    // Should use last 14 of the 21 values
-    expect(baseline).toBeGreaterThan(50);
-  });
-
-  it('returns 0 for empty array', () => {
-    expect(computeBaseline([])).toBe(0);
-  });
-});
-```
-
-**Step 2: Run the test to verify it fails**
-
-Run: `cd sleep-viz && npx vitest run src/test/readinessScore.test.ts`
-Expected: FAIL — module `../lib/readinessScore` not found
-
-**Step 3: Commit**
-
-```bash
-git add sleep-viz/src/test/readinessScore.test.ts
-git commit -m "test: add readiness score tests (red)"
-```
+**Tech Stack:** Supabase (Postgres + Auth + Realtime), React/TypeScript/Recharts (PWA), SwiftUI/SwiftData/HealthKit (iOS), supabase-swift, @supabase/supabase-js, Vitest
 
 ---
 
-### Task 2: PWA Readiness Engine — Implementation
+## Phase 1: Supabase Backend Setup
+
+### Task 1: Create Supabase Project and Schema
 
 **Files:**
-- Create: `sleep-viz/src/lib/readinessScore.ts`
-- Modify: `sleep-viz/src/lib/constants.ts` (add readiness weights)
+- Create: `supabase/migrations/001_initial_schema.sql`
+- Create: `supabase/.env.example`
 
-**Step 1: Add readiness constants**
+**Step 1: Install Supabase CLI and init**
 
-In `sleep-viz/src/lib/constants.ts`, add:
+Run: `brew install supabase/tap/supabase && cd /Users/atarkian2/conductor/workspaces/Sleep-Visualization/lima && supabase init`
+Expected: Creates `supabase/` directory with config
 
-```typescript
-export const READINESS_WEIGHTS = {
-  hrv: 0.50,
-  restingHR: 0.30,
-  sleepScore: 0.20,
-};
+**Step 2: Write the initial migration**
 
-export const READINESS_BASELINE_DAYS = 14;
+Create `supabase/migrations/001_initial_schema.sql`:
 
-export const READINESS_COLORS = {
-  ring: '#f59e0b', // amber
-};
+```sql
+-- Sleep Sessions
+CREATE TABLE sleep_sessions (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_id UUID REFERENCES auth.users(id) NOT NULL,
+  night_date TEXT NOT NULL,
+  start_date TIMESTAMPTZ NOT NULL,
+  end_date TIMESTAMPTZ NOT NULL,
+  time_in_bed REAL,
+  total_sleep_time REAL,
+  sleep_efficiency REAL,
+  sleep_latency REAL,
+  waso REAL,
+  deep_minutes REAL,
+  rem_minutes REAL,
+  core_minutes REAL,
+  awake_minutes REAL,
+  deep_percent REAL,
+  rem_percent REAL,
+  core_percent REAL,
+  awake_percent REAL,
+  score_overall INT,
+  score_duration INT,
+  score_efficiency INT,
+  score_deep INT,
+  score_rem INT,
+  score_latency INT,
+  score_waso INT,
+  score_timing INT,
+  score_restoration INT,
+  is_fallback BOOLEAN DEFAULT FALSE,
+  avg_heart_rate REAL,
+  min_heart_rate REAL,
+  avg_hrv REAL,
+  avg_spo2 REAL,
+  avg_respiratory_rate REAL,
+  resting_heart_rate REAL,
+  stages JSONB,
+  source_name TEXT,
+  synced_at TIMESTAMPTZ DEFAULT NOW(),
+  UNIQUE(user_id, night_date)
+);
+
+-- Readiness Records
+CREATE TABLE readiness_records (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_id UUID REFERENCES auth.users(id) NOT NULL,
+  date TEXT NOT NULL,
+  score INT,
+  hrv_baseline REAL,
+  hrv_current REAL,
+  resting_hr_baseline REAL,
+  resting_hr_current REAL,
+  sleep_score_contribution INT,
+  synced_at TIMESTAMPTZ DEFAULT NOW(),
+  UNIQUE(user_id, date)
+);
+
+-- Sleep Goals
+CREATE TABLE sleep_goals (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_id UUID REFERENCES auth.users(id) NOT NULL,
+  duration_target_min REAL DEFAULT 480,
+  score_target INT DEFAULT 75,
+  bedtime_start_min INT DEFAULT 1350,
+  bedtime_end_min INT DEFAULT 1380,
+  created_at TIMESTAMPTZ DEFAULT NOW(),
+  updated_at TIMESTAMPTZ DEFAULT NOW(),
+  UNIQUE(user_id)
+);
+
+-- Indexes
+CREATE INDEX idx_sessions_user_date ON sleep_sessions(user_id, night_date);
+CREATE INDEX idx_readiness_user_date ON readiness_records(user_id, date);
+
+-- Row Level Security
+ALTER TABLE sleep_sessions ENABLE ROW LEVEL SECURITY;
+ALTER TABLE readiness_records ENABLE ROW LEVEL SECURITY;
+ALTER TABLE sleep_goals ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY "Users manage own sessions" ON sleep_sessions
+  FOR ALL USING (auth.uid() = user_id);
+CREATE POLICY "Users manage own readiness" ON readiness_records
+  FOR ALL USING (auth.uid() = user_id);
+CREATE POLICY "Users manage own goals" ON sleep_goals
+  FOR ALL USING (auth.uid() = user_id);
+
+-- Enable realtime for PWA subscriptions
+ALTER PUBLICATION supabase_realtime ADD TABLE sleep_sessions;
+ALTER PUBLICATION supabase_realtime ADD TABLE readiness_records;
+ALTER PUBLICATION supabase_realtime ADD TABLE sleep_goals;
 ```
 
-**Step 2: Implement the readiness scoring engine**
+**Step 3: Create .env.example**
 
-Create `sleep-viz/src/lib/readinessScore.ts`:
+Create `supabase/.env.example`:
 
-```typescript
-import { READINESS_WEIGHTS, READINESS_BASELINE_DAYS } from './constants';
-
-function clamp(value: number, min: number, max: number): number {
-  return Math.max(min, Math.min(max, value));
-}
-
-/** Compute 14-day rolling baseline from an array of values (most recent last). */
-export function computeBaseline(values: number[]): number {
-  if (values.length === 0) return 0;
-  const recent = values.slice(-READINESS_BASELINE_DAYS);
-  return Math.round(recent.reduce((sum, v) => sum + v, 0) / recent.length);
-}
-
-/**
- * Score HRV: compare current to baseline.
- * ratio >= 1.15 → 100, ratio <= 0.85 → 40, 0.85–1.0 → 40–70, 1.0–1.15 → 70–100
- */
-export function scoreHRV(current: number, baseline: number): number {
-  if (baseline === 0) return 70;
-  const ratio = current / baseline;
-  if (ratio >= 1.15) return 100;
-  if (ratio <= 0.85) return 40;
-  if (ratio >= 1.0) {
-    // 1.0 → 70, 1.15 → 100
-    return Math.round(70 + ((ratio - 1.0) / 0.15) * 30);
-  }
-  // 0.85 → 40, 1.0 → 70
-  return Math.round(40 + ((ratio - 0.85) / 0.15) * 30);
-}
-
-/**
- * Score Resting HR: compare current to baseline.
- * diff <= -5 (lower is better) → 100, diff >= 5 → 40, else → 80 - (diff * 8)
- */
-export function scoreRestingHR(current: number, baseline: number): number {
-  const diff = current - baseline;
-  if (diff <= -5) return 100;
-  if (diff >= 5) return 40;
-  return Math.round(clamp(80 - diff * 8, 40, 100));
-}
-
-/**
- * Composite readiness: 50% HRV + 30% RHR + 20% Sleep Score.
- * Matches iOS ReadinessEngine weights.
- */
-export function computeReadinessScore(
-  hrvCurrent: number,
-  hrvBaseline: number,
-  restingHRCurrent: number,
-  restingHRBaseline: number,
-  sleepScore: number,
-): number {
-  const hrvScore = scoreHRV(hrvCurrent, hrvBaseline);
-  const rhrScore = scoreRestingHR(restingHRCurrent, restingHRBaseline);
-  const composite =
-    READINESS_WEIGHTS.hrv * hrvScore +
-    READINESS_WEIGHTS.restingHR * rhrScore +
-    READINESS_WEIGHTS.sleepScore * sleepScore;
-  return Math.round(clamp(composite, 0, 100));
-}
+```
+SUPABASE_URL=https://your-project.supabase.co
+SUPABASE_ANON_KEY=your-anon-key
 ```
 
-**Step 3: Run tests to verify they pass**
+**Step 4: Create the Supabase project via dashboard**
 
-Run: `cd sleep-viz && npx vitest run src/test/readinessScore.test.ts`
-Expected: All PASS
+Manual step: Go to https://supabase.com/dashboard, create a new project. Note the URL and anon key.
 
-**Step 4: Commit**
+Then enable Apple Sign-In: Dashboard → Authentication → Providers → Apple → Enable. Follow the Apple Developer setup instructions for Sign in with Apple.
 
-```bash
-git add sleep-viz/src/lib/readinessScore.ts sleep-viz/src/lib/constants.ts
-git commit -m "feat: add readiness scoring engine (PWA)"
-```
+**Step 5: Apply migration**
 
----
-
-### Task 3: PWA Readiness Data Hook & DB Schema
-
-**Files:**
-- Modify: `sleep-viz/src/db/schema.ts` (add readiness table)
-- Create: `sleep-viz/src/hooks/useReadiness.ts`
-- Modify: `sleep-viz/src/providers/types.ts` (add ReadinessRecord type)
-
-**Step 1: Add ReadinessRecord type**
-
-In `sleep-viz/src/providers/types.ts`, add:
-
-```typescript
-export interface ReadinessRecord {
-  id: string;
-  nightDate: string;
-  score: number;
-  hrvCurrent: number;
-  hrvBaseline: number;
-  restingHRCurrent: number;
-  restingHRBaseline: number;
-  sleepScoreContribution: number;
-}
-```
-
-**Step 2: Add readiness table to Dexie schema**
-
-In `sleep-viz/src/db/schema.ts`, bump the version and add:
-
-```typescript
-// Add to the class:
-readinessRecords!: Table<ReadinessRecord, string>;
-
-// In constructor, add new version:
-this.version(2).stores({
-  sleepSessions: 'id, nightDate, startDate',
-  biometricRecords: '++id, sessionId, type, date, [sessionId+type]',
-  readinessRecords: 'id, nightDate',
-});
-```
-
-**Step 3: Create useReadiness hook**
-
-Create `sleep-viz/src/hooks/useReadiness.ts`:
-
-```typescript
-import { useMemo } from 'react';
-import { useLiveQuery } from 'dexie-react-hooks';
-import { db } from '../db/schema';
-import type { SleepSession, ReadinessRecord } from '../providers/types';
-import { computeBaseline, computeReadinessScore } from '../lib/readinessScore';
-
-export function useReadiness(sessions: SleepSession[]): {
-  latestReadiness: ReadinessRecord | null;
-  readinessHistory: ReadinessRecord[];
-} {
-  const records = useMemo(() => {
-    if (sessions.length === 0) return [];
-
-    // Extract HRV and RHR values from sessions (oldest first)
-    const sortedSessions = [...sessions].sort(
-      (a, b) => a.nightDate.localeCompare(b.nightDate)
-    );
-
-    const hrvValues: number[] = [];
-    const rhrValues: number[] = [];
-    const results: ReadinessRecord[] = [];
-
-    for (const session of sortedSessions) {
-      if (session.avgHrv != null) hrvValues.push(session.avgHrv);
-      if (session.minHeartRate != null) rhrValues.push(session.minHeartRate);
-
-      if (hrvValues.length < 3 || rhrValues.length < 3) continue;
-
-      const hrvBaseline = computeBaseline(hrvValues.slice(0, -1));
-      const rhrBaseline = computeBaseline(rhrValues.slice(0, -1));
-      const hrvCurrent = session.avgHrv ?? hrvBaseline;
-      const rhrCurrent = session.minHeartRate ?? rhrBaseline;
-
-      const score = computeReadinessScore(
-        hrvCurrent,
-        hrvBaseline,
-        rhrCurrent,
-        rhrBaseline,
-        session.score.overall,
-      );
-
-      results.push({
-        id: `readiness-${session.nightDate}`,
-        nightDate: session.nightDate,
-        score,
-        hrvCurrent,
-        hrvBaseline,
-        restingHRCurrent: rhrCurrent,
-        restingHRBaseline: rhrBaseline,
-        sleepScoreContribution: session.score.overall,
-      });
-    }
-
-    return results;
-  }, [sessions]);
-
-  return {
-    latestReadiness: records.length > 0 ? records[records.length - 1] : null,
-    readinessHistory: records,
-  };
-}
-```
-
-**Step 4: Run lint and type-check**
-
-Run: `cd sleep-viz && npx tsc --noEmit`
-Expected: No errors
-
-**Step 5: Commit**
-
-```bash
-git add sleep-viz/src/providers/types.ts sleep-viz/src/db/schema.ts sleep-viz/src/hooks/useReadiness.ts
-git commit -m "feat: add readiness data hook and DB schema (PWA)"
-```
-
----
-
-### Task 4: PWA Readiness UI Components
-
-**Files:**
-- Create: `sleep-viz/src/components/readiness/ReadinessPanel.tsx`
-- Create: `sleep-viz/src/components/readiness/ReadinessFactors.tsx`
-- Modify: `sleep-viz/src/components/dashboard/Dashboard.tsx` (add readiness ring)
-- Modify: `sleep-viz/src/App.tsx` (add readiness section)
-
-**Step 1: Create ReadinessFactors component**
-
-Create `sleep-viz/src/components/readiness/ReadinessFactors.tsx`:
-
-```tsx
-import { Card } from '../layout/Card';
-import type { ReadinessRecord } from '../../providers/types';
-import { getScoreColor } from '../../lib/constants';
-
-interface Props {
-  record: ReadinessRecord;
-}
-
-export function ReadinessFactors({ record }: Props) {
-  const factors = [
-    {
-      label: 'HRV',
-      current: `${Math.round(record.hrvCurrent)} ms`,
-      baseline: `${Math.round(record.hrvBaseline)} ms`,
-      direction: record.hrvCurrent >= record.hrvBaseline ? 'up' : 'down',
-      weight: '50%',
-    },
-    {
-      label: 'Resting HR',
-      current: `${Math.round(record.restingHRCurrent)} bpm`,
-      baseline: `${Math.round(record.restingHRBaseline)} bpm`,
-      direction: record.restingHRCurrent <= record.restingHRBaseline ? 'up' : 'down',
-      weight: '30%',
-    },
-    {
-      label: 'Sleep Score',
-      current: `${record.sleepScoreContribution}`,
-      baseline: '',
-      direction: record.sleepScoreContribution >= 75 ? 'up' : 'down',
-      weight: '20%',
-    },
-  ];
-
-  return (
-    <Card>
-      <h3 className="text-sm font-medium text-white/60 mb-3">Contributing Factors</h3>
-      <div className="space-y-3">
-        {factors.map((f) => (
-          <div key={f.label} className="flex items-center justify-between">
-            <div>
-              <span className="text-sm text-white">{f.label}</span>
-              <span className="text-xs text-white/40 ml-2">({f.weight})</span>
-            </div>
-            <div className="text-sm">
-              <span className={f.direction === 'up' ? 'text-green-400' : 'text-red-400'}>
-                {f.current}
-              </span>
-              {f.baseline && (
-                <span className="text-white/40 ml-1">/ {f.baseline}</span>
-              )}
-            </div>
-          </div>
-        ))}
-      </div>
-    </Card>
-  );
-}
-```
-
-**Step 2: Create ReadinessPanel component**
-
-Create `sleep-viz/src/components/readiness/ReadinessPanel.tsx`:
-
-```tsx
-import { ScoreRing } from '../dashboard/ScoreRing';
-import { ReadinessFactors } from './ReadinessFactors';
-import { Section } from '../layout/Section';
-import type { ReadinessRecord } from '../../providers/types';
-import { LineChart, Line, XAxis, YAxis, ResponsiveContainer, Tooltip } from 'recharts';
-import { READINESS_COLORS } from '../../lib/constants';
-
-interface Props {
-  latest: ReadinessRecord | null;
-  history: ReadinessRecord[];
-}
-
-export function ReadinessPanel({ latest, history }: Props) {
-  if (!latest) {
-    return (
-      <Section title="Readiness">
-        <p className="text-white/40 text-sm">
-          Need at least 3 nights of biometric data to compute readiness.
-        </p>
-      </Section>
-    );
-  }
-
-  const chartData = history.slice(-30).map((r) => ({
-    date: r.nightDate,
-    score: r.score,
-    hrv: Math.round(r.hrvCurrent),
-  }));
-
-  return (
-    <Section title="Readiness">
-      <div className="flex flex-col items-center mb-6">
-        <ScoreRing score={latest.score} size={180} label="Readiness" />
-      </div>
-
-      <ReadinessFactors record={latest} />
-
-      {chartData.length > 3 && (
-        <div className="mt-6">
-          <h3 className="text-sm font-medium text-white/60 mb-3">30-Day Trend</h3>
-          <ResponsiveContainer width="100%" height={160}>
-            <LineChart data={chartData}>
-              <XAxis dataKey="date" hide />
-              <YAxis domain={[0, 100]} hide />
-              <Tooltip
-                contentStyle={{ background: '#1a1a1a', border: '1px solid rgba(255,255,255,0.1)' }}
-                labelStyle={{ color: 'rgba(255,255,255,0.6)' }}
-              />
-              <Line
-                type="monotone"
-                dataKey="score"
-                stroke={READINESS_COLORS.ring}
-                strokeWidth={2}
-                dot={false}
-              />
-            </LineChart>
-          </ResponsiveContainer>
-        </div>
-      )}
-    </Section>
-  );
-}
-```
-
-**Step 3: Add readiness ring to Dashboard**
-
-In `sleep-viz/src/components/dashboard/Dashboard.tsx`, import and add the readiness score ring next to the sleep score ring. Add the `useReadiness` hook and render a second `ScoreRing` with `label="Readiness"` in a flex row alongside the existing sleep score ring.
-
-**Step 4: Add readiness section to App**
-
-In `sleep-viz/src/App.tsx`, add a 'readiness' section option and wire up `ReadinessPanel`.
-
-**Step 5: Run the dev server and verify visually**
-
-Run: `cd sleep-viz && npm run dev`
-Expected: Dashboard shows two rings side-by-side, readiness section accessible
+Run: `supabase db push` (if linked) or paste SQL into Supabase SQL Editor.
 
 **Step 6: Commit**
 
 ```bash
-git add sleep-viz/src/components/readiness/ sleep-viz/src/components/dashboard/Dashboard.tsx sleep-viz/src/App.tsx
-git commit -m "feat: add readiness score UI to PWA dashboard"
+git add supabase/
+git commit -m "feat: add Supabase project config and initial schema"
 ```
 
 ---
 
-### Task 5: PWA Coaching Tips Engine — Tests
+## Phase 2: iOS — Updated Scoring Algorithm
+
+### Task 2: Update SleepScoringEngine — Tests
 
 **Files:**
-- Create: `sleep-viz/src/test/coachingTips.test.ts`
+- Modify: `Amir-SleepApp/Amir-SleepAppTests/Amir_SleepAppTests.swift`
 
-**Step 1: Write failing tests**
+**Step 1: Add tests for new scoring functions**
 
-```typescript
-import { describe, it, expect } from 'vitest';
-import { generateTips, type CoachingTip } from '../lib/coachingTips';
-import type { SleepSession } from '../providers/types';
+```swift
+import XCTest
+@testable import Amir_SleepApp
 
-function makeSession(overrides: Partial<SleepSession>): SleepSession {
-  return {
-    id: 'test',
-    nightDate: '2026-03-01',
-    startDate: new Date('2026-03-01T23:00:00'),
-    endDate: new Date('2026-03-02T07:00:00'),
-    stages: [],
-    score: { overall: 75, duration: 80, efficiency: 85, deepSleep: 70, rem: 70, latency: 90, waso: 90, isFallback: false },
-    sourceName: 'Apple Watch',
-    sourceNames: ['Apple Watch'],
-    timeInBed: 480,
-    totalSleepTime: 420,
-    sleepEfficiency: 87.5,
-    sleepLatency: 10,
-    waso: 15,
-    deepMinutes: 60,
-    remMinutes: 90,
-    coreMinutes: 240,
-    awakeMinutes: 30,
-    deepPercent: 14.3,
-    remPercent: 21.4,
-    corePercent: 57.1,
-    awakePercent: 7.1,
-    avgHeartRate: 58,
-    minHeartRate: 48,
-    avgHrv: 42,
-    avgSpo2: 96,
-    avgRespiratoryRate: 14,
-    ...overrides,
-  } as SleepSession;
+final class SleepScoringTests: XCTestCase {
+    // Duration: 7-9h = 100
+    func testScoreDuration_optimal() {
+        XCTAssertEqual(SleepScoringEngine.scoreDuration(totalSleepMinutes: 480), 100)
+    }
+    func testScoreDuration_short() {
+        XCTAssertEqual(SleepScoringEngine.scoreDuration(totalSleepMinutes: 300), 0) // 5h
+    }
+    func testScoreDuration_long() {
+        XCTAssertEqual(SleepScoringEngine.scoreDuration(totalSleepMinutes: 660), 0) // 11h
+    }
+
+    // Efficiency: 85%+ = 100 (updated from 90%)
+    func testScoreEfficiency_85() {
+        XCTAssertEqual(SleepScoringEngine.scoreEfficiency(efficiency: 85), 100)
+    }
+    func testScoreEfficiency_65() {
+        XCTAssertEqual(SleepScoringEngine.scoreEfficiency(efficiency: 65), 0)
+    }
+
+    // Deep: 10-25% = 100 (updated from 15-25%)
+    func testScoreDeepSleep_10percent() {
+        XCTAssertEqual(SleepScoringEngine.scoreDeepSleep(deepPercent: 10), 100)
+    }
+    func testScoreDeepSleep_5percent() {
+        XCTAssertEqual(SleepScoringEngine.scoreDeepSleep(deepPercent: 5), 50)
+    }
+
+    // Latency: 10-20 min = 100, <5 min = 70 (sleep debt)
+    func testScoreLatency_15min() {
+        XCTAssertEqual(SleepScoringEngine.scoreLatency(latencyMinutes: 15), 100)
+    }
+    func testScoreLatency_3min_sleepDebt() {
+        XCTAssertEqual(SleepScoringEngine.scoreLatency(latencyMinutes: 3), 70)
+    }
+    func testScoreLatency_45min() {
+        XCTAssertEqual(SleepScoringEngine.scoreLatency(latencyMinutes: 45), 0)
+    }
+
+    // WASO: ≤20 min = 100 (updated from 10)
+    func testScoreWaso_20min() {
+        XCTAssertEqual(SleepScoringEngine.scoreWaso(wasoMinutes: 20), 100)
+    }
+
+    // Timing: midpoint midnight-3AM = 100
+    func testScoreTiming_1am() {
+        // midnight = 0, 3AM = 180 → midpoint of midnight-3AM
+        XCTAssertEqual(SleepScoringEngine.scoreTiming(midpointMinutesFromMidnight: 90), 100)
+    }
+    func testScoreTiming_5am() {
+        let score = SleepScoringEngine.scoreTiming(midpointMinutesFromMidnight: 300)
+        XCTAssertLessThan(score, 50)
+    }
+
+    // Restoration: HR drop 10%+ = 100
+    func testScoreRestoration_goodDrop() {
+        XCTAssertEqual(SleepScoringEngine.scoreRestoration(sleepingHR: 54, restingHR: 60), 100)
+    }
+    func testScoreRestoration_noDrop() {
+        XCTAssertEqual(SleepScoringEngine.scoreRestoration(sleepingHR: 60, restingHR: 60), 50)
+    }
 }
-
-describe('generateTips', () => {
-  it('returns low deep sleep tip when deep < 15% for 3+ nights', () => {
-    const sessions = [
-      makeSession({ nightDate: '2026-02-27', deepPercent: 10 }),
-      makeSession({ nightDate: '2026-02-28', deepPercent: 12 }),
-      makeSession({ nightDate: '2026-03-01', deepPercent: 11 }),
-    ];
-    const tips = generateTips(sessions);
-    expect(tips.some((t) => t.id === 'low-deep-sleep')).toBe(true);
-  });
-
-  it('returns low efficiency tip when efficiency < 85%', () => {
-    const sessions = [makeSession({ sleepEfficiency: 78 })];
-    const tips = generateTips(sessions);
-    expect(tips.some((t) => t.id === 'low-efficiency')).toBe(true);
-  });
-
-  it('returns high latency tip when latency > 30 min', () => {
-    const sessions = [makeSession({ sleepLatency: 40 })];
-    const tips = generateTips(sessions);
-    expect(tips.some((t) => t.id === 'high-latency')).toBe(true);
-  });
-
-  it('returns inconsistent bedtime tip when variance > 1 hour', () => {
-    const sessions = [
-      makeSession({ nightDate: '2026-02-25', startDate: new Date('2026-02-25T22:00:00') }),
-      makeSession({ nightDate: '2026-02-26', startDate: new Date('2026-02-27T00:30:00') }),
-      makeSession({ nightDate: '2026-02-27', startDate: new Date('2026-02-27T21:00:00') }),
-      makeSession({ nightDate: '2026-02-28', startDate: new Date('2026-03-01T01:00:00') }),
-      makeSession({ nightDate: '2026-03-01', startDate: new Date('2026-03-01T23:30:00') }),
-    ];
-    const tips = generateTips(sessions);
-    expect(tips.some((t) => t.id === 'inconsistent-bedtime')).toBe(true);
-  });
-
-  it('returns declining trend tip when scores drop over 7 days', () => {
-    const sessions = Array.from({ length: 7 }, (_, i) =>
-      makeSession({
-        nightDate: `2026-02-${22 + i}`,
-        score: { overall: 90 - i * 5, duration: 80, efficiency: 80, deepSleep: 70, rem: 70, latency: 80, waso: 80, isFallback: false },
-      }),
-    );
-    const tips = generateTips(sessions);
-    expect(tips.some((t) => t.id === 'declining-trend')).toBe(true);
-  });
-
-  it('returns positive tip when latest score >= 90', () => {
-    const sessions = [
-      makeSession({
-        score: { overall: 92, duration: 95, efficiency: 90, deepSleep: 90, rem: 85, latency: 95, waso: 95, isFallback: false },
-      }),
-    ];
-    const tips = generateTips(sessions);
-    expect(tips.some((t) => t.id === 'excellent-sleep')).toBe(true);
-  });
-
-  it('returns empty array with no sessions', () => {
-    expect(generateTips([])).toEqual([]);
-  });
-
-  it('returns at most 3 tips, ordered by priority', () => {
-    const sessions = [
-      makeSession({
-        sleepEfficiency: 70,
-        sleepLatency: 45,
-        deepPercent: 8,
-        score: { overall: 40, duration: 50, efficiency: 50, deepSleep: 30, rem: 40, latency: 30, waso: 40, isFallback: false },
-      }),
-    ];
-    const tips = generateTips(sessions);
-    expect(tips.length).toBeLessThanOrEqual(3);
-  });
-});
 ```
 
-**Step 2: Run tests to verify failure**
+**Step 2: Run tests to verify they fail**
 
-Run: `cd sleep-viz && npx vitest run src/test/coachingTips.test.ts`
-Expected: FAIL — module not found
+Run: In Xcode, Cmd+U to run tests.
+Expected: FAIL — `scoreTiming` and `scoreRestoration` not found; other tests fail on updated thresholds.
 
 **Step 3: Commit**
 
 ```bash
-git add sleep-viz/src/test/coachingTips.test.ts
-git commit -m "test: add coaching tips engine tests (red)"
+git add Amir-SleepApp/Amir-SleepAppTests/
+git commit -m "test: add tests for updated scoring algorithm (red)"
 ```
 
 ---
 
-### Task 6: PWA Coaching Tips Engine — Implementation
+### Task 3: Update SleepScoringEngine — Implementation
 
 **Files:**
-- Create: `sleep-viz/src/lib/coachingTips.ts`
+- Modify: `Amir-SleepApp/Amir-SleepApp/Services/SleepScoringEngine.swift`
+- Modify: `Amir-SleepApp/Amir-SleepApp/Utilities/Constants.swift`
+- Modify: `Amir-SleepApp/Amir-SleepApp/Models/SleepSession.swift` (add new score fields)
 
-**Step 1: Implement the coaching tips engine**
+**Step 1: Update Constants.swift**
 
-```typescript
-import type { SleepSession } from '../providers/types';
+Replace score weights:
 
-export interface CoachingTip {
-  id: string;
-  title: string;
-  message: string;
-  priority: number; // lower = higher priority
-  type: 'warning' | 'info' | 'positive';
+```swift
+enum ScoreWeights {
+    static let duration = 0.30
+    static let efficiency = 0.15
+    static let deepSleep = 0.12
+    static let rem = 0.10
+    static let latency = 0.08
+    static let waso = 0.08
+    static let timing = 0.08
+    static let restoration = 0.09
 }
 
-export function generateTips(sessions: SleepSession[]): CoachingTip[] {
-  if (sessions.length === 0) return [];
+enum ScoreWeightsFallback {
+    static let duration = 0.40
+    static let efficiency = 0.25
+    static let latency = 0.10
+    static let waso = 0.10
+    static let timing = 0.08
+    static let restoration = 0.07
+}
+```
 
-  const tips: CoachingTip[] = [];
-  const latest = sessions[sessions.length - 1];
-  const recent7 = sessions.slice(-7);
-  const recent3 = sessions.slice(-3);
+Update `getScoreInfo`:
 
-  // Low deep sleep for 3+ nights
-  if (recent3.length >= 3 && recent3.every((s) => s.deepPercent < 15)) {
-    tips.push({
-      id: 'low-deep-sleep',
-      title: 'Low Deep Sleep',
-      message:
-        'Your deep sleep has been below 15% for the past few nights. Try keeping your room cooler (65-68°F) and avoiding alcohol before bed.',
-      priority: 1,
-      type: 'warning',
-    });
-  }
-
-  // Low efficiency
-  if (latest.sleepEfficiency < 85) {
-    tips.push({
-      id: 'low-efficiency',
-      title: 'Low Sleep Efficiency',
-      message:
-        "You're spending too much time awake in bed. Try going to bed only when you feel sleepy, and get up if you can't sleep after 20 minutes.",
-      priority: 2,
-      type: 'warning',
-    });
-  }
-
-  // High latency
-  if (latest.sleepLatency > 30) {
-    tips.push({
-      id: 'high-latency',
-      title: 'Slow Sleep Onset',
-      message:
-        "You're taking over 30 minutes to fall asleep. Consider a wind-down routine: dim lights, no screens, and relaxation techniques 30 minutes before bed.",
-      priority: 3,
-      type: 'warning',
-    });
-  }
-
-  // Inconsistent bedtime (std dev of bedtime > 60 min over last 5+ nights)
-  if (recent7.length >= 5) {
-    const bedtimeMinutes = recent7.map((s) => {
-      const h = s.startDate.getHours();
-      const m = s.startDate.getMinutes();
-      return h < 12 ? h * 60 + m + 1440 : h * 60 + m; // normalize past midnight
-    });
-    const mean = bedtimeMinutes.reduce((a, b) => a + b, 0) / bedtimeMinutes.length;
-    const variance = bedtimeMinutes.reduce((sum, v) => sum + (v - mean) ** 2, 0) / bedtimeMinutes.length;
-    const stdDev = Math.sqrt(variance);
-    if (stdDev > 60) {
-      tips.push({
-        id: 'inconsistent-bedtime',
-        title: 'Inconsistent Bedtime',
-        message:
-          'Your bedtime varies by over an hour. A consistent sleep schedule helps regulate your circadian rhythm and improves sleep quality.',
-        priority: 4,
-        type: 'info',
-      });
+```swift
+func getScoreInfo(_ score: Int) -> ScoreInfo {
+    switch score {
+    case 85...100: return ScoreInfo(label: "Optimal", color: Color(hex: "#22c55e"))
+    case 70...84: return ScoreInfo(label: "Good", color: Color(hex: "#3b82f6"))
+    case 55...69: return ScoreInfo(label: "Fair", color: Color(hex: "#eab308"))
+    default: return ScoreInfo(label: "Needs Improvement", color: Color(hex: "#ef4444"))
     }
-  }
+}
+```
 
-  // Declining trend over 7 days
-  if (recent7.length >= 7) {
-    const first3Avg = recent7.slice(0, 3).reduce((s, r) => s + r.score.overall, 0) / 3;
-    const last3Avg = recent7.slice(-3).reduce((s, r) => s + r.score.overall, 0) / 3;
-    if (last3Avg < first3Avg - 10) {
-      tips.push({
-        id: 'declining-trend',
-        title: 'Sleep Quality Declining',
-        message:
-          'Your sleep score has been trending down this week. Check if anything changed recently — stress, caffeine timing, screen use, or exercise habits.',
-        priority: 2,
-        type: 'warning',
-      });
+**Step 2: Update SleepScoreData model**
+
+In `SleepSession.swift`, add new fields to `SleepScoreData`:
+
+```swift
+struct SleepScoreData: Codable {
+    let overall: Int
+    let duration: Int
+    let efficiency: Int
+    let deepSleep: Int
+    let rem: Int
+    let latency: Int
+    let waso: Int
+    let timing: Int
+    let restoration: Int
+    let isFallback: Bool
+}
+```
+
+**Step 3: Update SleepScoringEngine**
+
+In `SleepScoringEngine.swift`, update existing functions and add new ones:
+
+```swift
+enum SleepScoringEngine {
+    private static func clamp(_ value: Double, min: Double, max: Double) -> Double {
+        Swift.max(min, Swift.min(max, value))
     }
-  }
-
-  // Excellent sleep
-  if (latest.score.overall >= 90) {
-    tips.push({
-      id: 'excellent-sleep',
-      title: 'Excellent Sleep!',
-      message: 'Great sleep last night! Whatever you did yesterday, keep it up.',
-      priority: 10,
-      type: 'positive',
-    });
-  }
-
-  // Sort by priority, return top 3
-  tips.sort((a, b) => a.priority - b.priority);
-  return tips.slice(0, 3);
-}
-```
-
-**Step 2: Run tests**
-
-Run: `cd sleep-viz && npx vitest run src/test/coachingTips.test.ts`
-Expected: All PASS
-
-**Step 3: Commit**
-
-```bash
-git add sleep-viz/src/lib/coachingTips.ts
-git commit -m "feat: add coaching tips engine (PWA)"
-```
-
----
-
-### Task 7: PWA Coaching Tips UI
-
-**Files:**
-- Create: `sleep-viz/src/components/dashboard/CoachingTips.tsx`
-- Modify: `sleep-viz/src/components/dashboard/Dashboard.tsx`
-
-**Step 1: Create CoachingTips component**
-
-```tsx
-import { Card } from '../layout/Card';
-import type { CoachingTip } from '../../lib/coachingTips';
-import { Lightbulb, AlertTriangle, Star } from 'lucide-react';
-
-interface Props {
-  tips: CoachingTip[];
-}
-
-const ICONS = {
-  warning: AlertTriangle,
-  info: Lightbulb,
-  positive: Star,
-};
-
-const ICON_COLORS = {
-  warning: 'text-orange-400',
-  info: 'text-blue-400',
-  positive: 'text-green-400',
-};
-
-export function CoachingTips({ tips }: Props) {
-  if (tips.length === 0) return null;
-
-  return (
-    <div className="space-y-2">
-      <h3 className="text-sm font-medium text-white/60">Today's Tips</h3>
-      {tips.map((tip) => {
-        const Icon = ICONS[tip.type];
-        return (
-          <Card key={tip.id}>
-            <div className="flex gap-3">
-              <Icon className={`w-5 h-5 mt-0.5 flex-shrink-0 ${ICON_COLORS[tip.type]}`} />
-              <div>
-                <p className="text-sm font-medium text-white">{tip.title}</p>
-                <p className="text-xs text-white/50 mt-1">{tip.message}</p>
-              </div>
-            </div>
-          </Card>
-        );
-      })}
-    </div>
-  );
-}
-```
-
-**Step 2: Wire into Dashboard**
-
-In `Dashboard.tsx`, import `generateTips` and `CoachingTips`. Call `generateTips(sessions)` and render `<CoachingTips tips={tips} />` below the score rings.
-
-**Step 3: Verify visually**
-
-Run: `cd sleep-viz && npm run dev`
-Expected: Tips appear on dashboard when sample data is loaded
-
-**Step 4: Commit**
-
-```bash
-git add sleep-viz/src/components/dashboard/CoachingTips.tsx sleep-viz/src/components/dashboard/Dashboard.tsx
-git commit -m "feat: add coaching tips to PWA dashboard"
-```
-
----
-
-### Task 8: PWA Weekly/Monthly Reports — Tests
-
-**Files:**
-- Create: `sleep-viz/src/test/reports.test.ts`
-
-**Step 1: Write failing tests**
-
-```typescript
-import { describe, it, expect } from 'vitest';
-import { generateWeeklyReport, generateMonthlyReport, type SleepReport } from '../lib/reports';
-import type { SleepSession, SleepScore } from '../providers/types';
-
-function makeSession(nightDate: string, overrides?: Partial<SleepSession>): SleepSession {
-  const score: SleepScore = {
-    overall: 75, duration: 80, efficiency: 85, deepSleep: 70,
-    rem: 70, latency: 90, waso: 90, isFallback: false,
-  };
-  return {
-    id: `session-${nightDate}`,
-    nightDate,
-    startDate: new Date(`${nightDate}T23:00:00`),
-    endDate: new Date(`${nightDate}T07:00:00`),
-    stages: [],
-    score,
-    sourceName: 'Apple Watch',
-    sourceNames: ['Apple Watch'],
-    timeInBed: 480,
-    totalSleepTime: 420,
-    sleepEfficiency: 87.5,
-    sleepLatency: 10,
-    waso: 15,
-    deepMinutes: 60,
-    remMinutes: 90,
-    coreMinutes: 240,
-    awakeMinutes: 30,
-    deepPercent: 14.3,
-    remPercent: 21.4,
-    corePercent: 57.1,
-    awakePercent: 7.1,
-    avgHeartRate: 58,
-    minHeartRate: 48,
-    avgHrv: 42,
-    avgSpo2: 96,
-    avgRespiratoryRate: 14,
-    ...overrides,
-  } as SleepSession;
-}
-
-describe('generateWeeklyReport', () => {
-  const sessions = [
-    makeSession('2026-02-23', { score: { overall: 85, duration: 90, efficiency: 85, deepSleep: 80, rem: 80, latency: 90, waso: 90, isFallback: false }, totalSleepTime: 450 }),
-    makeSession('2026-02-24', { score: { overall: 70, duration: 70, efficiency: 75, deepSleep: 65, rem: 70, latency: 80, waso: 75, isFallback: false }, totalSleepTime: 380 }),
-    makeSession('2026-02-25', { score: { overall: 90, duration: 95, efficiency: 90, deepSleep: 85, rem: 85, latency: 95, waso: 95, isFallback: false }, totalSleepTime: 470 }),
-    makeSession('2026-02-26', { score: { overall: 65, duration: 60, efficiency: 70, deepSleep: 60, rem: 65, latency: 75, waso: 70, isFallback: false }, totalSleepTime: 360 }),
-    makeSession('2026-02-27', { score: { overall: 78, duration: 80, efficiency: 80, deepSleep: 75, rem: 75, latency: 85, waso: 80, isFallback: false }, totalSleepTime: 420 }),
-  ];
-
-  it('calculates average score', () => {
-    const report = generateWeeklyReport(sessions);
-    expect(report.avgScore).toBe(Math.round((85 + 70 + 90 + 65 + 78) / 5));
-  });
-
-  it('identifies best and worst nights', () => {
-    const report = generateWeeklyReport(sessions);
-    expect(report.bestNight.nightDate).toBe('2026-02-25');
-    expect(report.worstNight.nightDate).toBe('2026-02-26');
-  });
-
-  it('calculates average duration in hours', () => {
-    const report = generateWeeklyReport(sessions);
-    const expectedAvgMin = (450 + 380 + 470 + 360 + 420) / 5;
-    expect(report.avgDurationHours).toBeCloseTo(expectedAvgMin / 60, 1);
-  });
-
-  it('determines trend direction', () => {
-    const report = generateWeeklyReport(sessions);
-    expect(['improving', 'declining', 'stable']).toContain(report.trendDirection);
-  });
-
-  it('returns empty report for no sessions', () => {
-    const report = generateWeeklyReport([]);
-    expect(report.avgScore).toBe(0);
-    expect(report.nights).toBe(0);
-  });
-});
-
-describe('generateMonthlyReport', () => {
-  it('generates weekly comparisons', () => {
-    const sessions = Array.from({ length: 28 }, (_, i) => {
-      const day = String(i + 1).padStart(2, '0');
-      return makeSession(`2026-02-${day}`);
-    });
-    const report = generateMonthlyReport(sessions);
-    expect(report.weeklyBreakdown.length).toBeGreaterThanOrEqual(3);
-  });
-});
-```
-
-**Step 2: Run to verify failure**
-
-Run: `cd sleep-viz && npx vitest run src/test/reports.test.ts`
-Expected: FAIL
-
-**Step 3: Commit**
-
-```bash
-git add sleep-viz/src/test/reports.test.ts
-git commit -m "test: add weekly/monthly report tests (red)"
-```
-
----
-
-### Task 9: PWA Reports Engine — Implementation
-
-**Files:**
-- Create: `sleep-viz/src/lib/reports.ts`
-
-**Step 1: Implement report generation**
-
-```typescript
-import type { SleepSession } from '../providers/types';
-
-export interface SleepReport {
-  type: 'weekly' | 'monthly';
-  startDate: string;
-  endDate: string;
-  nights: number;
-  avgScore: number;
-  avgDurationHours: number;
-  avgEfficiency: number;
-  avgDeepPercent: number;
-  avgRemPercent: number;
-  avgCorePercent: number;
-  bestNight: { nightDate: string; score: number };
-  worstNight: { nightDate: string; score: number };
-  trendDirection: 'improving' | 'declining' | 'stable';
-  insights: string[];
-  recommendations: string[];
-  weeklyBreakdown: WeekSummary[];
-}
-
-interface WeekSummary {
-  weekStart: string;
-  avgScore: number;
-  nights: number;
-}
-
-function avg(arr: number[]): number {
-  if (arr.length === 0) return 0;
-  return arr.reduce((s, v) => s + v, 0) / arr.length;
-}
-
-function emptyReport(type: 'weekly' | 'monthly'): SleepReport {
-  return {
-    type,
-    startDate: '',
-    endDate: '',
-    nights: 0,
-    avgScore: 0,
-    avgDurationHours: 0,
-    avgEfficiency: 0,
-    avgDeepPercent: 0,
-    avgRemPercent: 0,
-    avgCorePercent: 0,
-    bestNight: { nightDate: '', score: 0 },
-    worstNight: { nightDate: '', score: 0 },
-    trendDirection: 'stable',
-    insights: [],
-    recommendations: [],
-    weeklyBreakdown: [],
-  };
-}
-
-function computeInsights(sessions: SleepSession[]): string[] {
-  const insights: string[] = [];
-  if (sessions.length < 3) return insights;
-
-  // Weekend vs weekday comparison
-  const weekdays = sessions.filter((s) => {
-    const d = new Date(s.nightDate).getDay();
-    return d >= 1 && d <= 4; // Mon-Thu nights
-  });
-  const weekends = sessions.filter((s) => {
-    const d = new Date(s.nightDate).getDay();
-    return d === 5 || d === 6 || d === 0; // Fri/Sat/Sun nights
-  });
-  if (weekdays.length > 0 && weekends.length > 0) {
-    const wdAvg = avg(weekdays.map((s) => s.totalSleepTime));
-    const weAvg = avg(weekends.map((s) => s.totalSleepTime));
-    const diffMin = Math.round(Math.abs(weAvg - wdAvg));
-    if (diffMin > 30) {
-      const direction = weAvg > wdAvg ? 'longer' : 'shorter';
-      insights.push(`You slept ${diffMin} minutes ${direction} on weekends vs weekdays.`);
+    private static func linearScale(_ value: Double, min: Double, max: Double) -> Double {
+        clamp((value - min) / (max - min) * 100, min: 0, max: 100)
     }
-  }
 
-  // Best bedtime correlation
-  const sortedByScore = [...sessions].sort((a, b) => b.score.overall - a.score.overall);
-  const top3 = sortedByScore.slice(0, 3);
-  if (top3.length >= 3) {
-    const avgBedtimeH = avg(top3.map((s) => {
-      const h = s.startDate.getHours();
-      return h < 12 ? h + 24 : h;
-    }));
-    const h = Math.floor(avgBedtimeH % 24);
-    const m = Math.round((avgBedtimeH % 1) * 60);
-    const period = h >= 12 ? 'PM' : 'AM';
-    const displayH = h > 12 ? h - 12 : h === 0 ? 12 : h;
-    insights.push(`Your best sleep nights had bedtimes around ${displayH}:${String(m).padStart(2, '0')} ${period}.`);
-  }
-
-  return insights;
-}
-
-function computeRecommendations(sessions: SleepSession[]): string[] {
-  const recs: string[] = [];
-  if (sessions.length === 0) return recs;
-
-  const avgDeep = avg(sessions.map((s) => s.deepPercent));
-  const avgEff = avg(sessions.map((s) => s.sleepEfficiency));
-
-  if (avgDeep < 15) {
-    recs.push('Focus on increasing deep sleep: keep your room cool, exercise earlier in the day, and limit evening screen time.');
-  }
-  if (avgEff < 85) {
-    recs.push('Improve sleep efficiency by going to bed only when sleepy and maintaining a consistent wake time.');
-  }
-
-  return recs.slice(0, 2);
-}
-
-function computeTrendDirection(sessions: SleepSession[]): 'improving' | 'declining' | 'stable' {
-  if (sessions.length < 4) return 'stable';
-  const firstHalf = sessions.slice(0, Math.floor(sessions.length / 2));
-  const secondHalf = sessions.slice(Math.floor(sessions.length / 2));
-  const firstAvg = avg(firstHalf.map((s) => s.score.overall));
-  const secondAvg = avg(secondHalf.map((s) => s.score.overall));
-  const diff = secondAvg - firstAvg;
-  if (diff > 5) return 'improving';
-  if (diff < -5) return 'declining';
-  return 'stable';
-}
-
-export function generateWeeklyReport(sessions: SleepSession[]): SleepReport {
-  if (sessions.length === 0) return emptyReport('weekly');
-
-  const sorted = [...sessions].sort((a, b) => a.nightDate.localeCompare(b.nightDate));
-  const scores = sorted.map((s) => s.score.overall);
-  const best = sorted.reduce((a, b) => (b.score.overall > a.score.overall ? b : a));
-  const worst = sorted.reduce((a, b) => (b.score.overall < a.score.overall ? b : a));
-
-  return {
-    type: 'weekly',
-    startDate: sorted[0].nightDate,
-    endDate: sorted[sorted.length - 1].nightDate,
-    nights: sorted.length,
-    avgScore: Math.round(avg(scores)),
-    avgDurationHours: Math.round((avg(sorted.map((s) => s.totalSleepTime)) / 60) * 10) / 10,
-    avgEfficiency: Math.round(avg(sorted.map((s) => s.sleepEfficiency))),
-    avgDeepPercent: Math.round(avg(sorted.map((s) => s.deepPercent)) * 10) / 10,
-    avgRemPercent: Math.round(avg(sorted.map((s) => s.remPercent)) * 10) / 10,
-    avgCorePercent: Math.round(avg(sorted.map((s) => s.corePercent)) * 10) / 10,
-    bestNight: { nightDate: best.nightDate, score: best.score.overall },
-    worstNight: { nightDate: worst.nightDate, score: worst.score.overall },
-    trendDirection: computeTrendDirection(sorted),
-    insights: computeInsights(sorted),
-    recommendations: computeRecommendations(sorted),
-    weeklyBreakdown: [],
-  };
-}
-
-export function generateMonthlyReport(sessions: SleepSession[]): SleepReport {
-  if (sessions.length === 0) return emptyReport('monthly');
-
-  const sorted = [...sessions].sort((a, b) => a.nightDate.localeCompare(b.nightDate));
-
-  // Build weekly breakdown
-  const weeks: SleepSession[][] = [];
-  let currentWeek: SleepSession[] = [];
-  for (const session of sorted) {
-    if (currentWeek.length >= 7) {
-      weeks.push(currentWeek);
-      currentWeek = [];
+    // Duration: 7-9h = 100 (unchanged range, weight changed)
+    static func scoreDuration(totalSleepMinutes: Double) -> Int {
+        let hours = totalSleepMinutes / 60.0
+        if hours >= 7 && hours <= 9 { return 100 }
+        if hours < 7 { return Int(linearScale(hours, min: 5, max: 7)) }
+        return Int(linearScale(11 - hours, min: 0, max: 2))
     }
-    currentWeek.push(session);
-  }
-  if (currentWeek.length > 0) weeks.push(currentWeek);
 
-  const weeklyBreakdown: WeekSummary[] = weeks.map((w) => ({
-    weekStart: w[0].nightDate,
-    avgScore: Math.round(avg(w.map((s) => s.score.overall))),
-    nights: w.length,
-  }));
-
-  const base = generateWeeklyReport(sorted);
-  return {
-    ...base,
-    type: 'monthly',
-    weeklyBreakdown,
-  };
-}
-```
-
-**Step 2: Run tests**
-
-Run: `cd sleep-viz && npx vitest run src/test/reports.test.ts`
-Expected: All PASS
-
-**Step 3: Commit**
-
-```bash
-git add sleep-viz/src/lib/reports.ts
-git commit -m "feat: add weekly/monthly report engine (PWA)"
-```
-
----
-
-### Task 10: PWA Reports UI
-
-**Files:**
-- Create: `sleep-viz/src/components/reports/ReportsView.tsx`
-- Create: `sleep-viz/src/components/reports/ReportCard.tsx`
-- Modify: `sleep-viz/src/App.tsx` (add reports section)
-
-**Step 1: Create ReportCard component**
-
-```tsx
-import { Card } from '../layout/Card';
-import type { SleepReport } from '../../lib/reports';
-import { getScoreColor } from '../../lib/constants';
-import { TrendingUp, TrendingDown, Minus } from 'lucide-react';
-
-interface Props {
-  report: SleepReport;
-}
-
-const TREND_ICONS = {
-  improving: TrendingUp,
-  declining: TrendingDown,
-  stable: Minus,
-};
-
-const TREND_COLORS = {
-  improving: 'text-green-400',
-  declining: 'text-red-400',
-  stable: 'text-white/40',
-};
-
-export function ReportCard({ report }: Props) {
-  if (report.nights === 0) return null;
-  const TrendIcon = TREND_ICONS[report.trendDirection];
-
-  return (
-    <Card>
-      <div className="flex justify-between items-start mb-4">
-        <div>
-          <h3 className="text-lg font-semibold text-white capitalize">{report.type} Report</h3>
-          <p className="text-xs text-white/40">{report.startDate} — {report.endDate}</p>
-        </div>
-        <div className="flex items-center gap-1">
-          <TrendIcon className={`w-4 h-4 ${TREND_COLORS[report.trendDirection]}`} />
-          <span className={`text-xs ${TREND_COLORS[report.trendDirection]}`}>
-            {report.trendDirection}
-          </span>
-        </div>
-      </div>
-
-      {/* Key Stats */}
-      <div className="grid grid-cols-3 gap-4 mb-4">
-        <div>
-          <p className="text-xs text-white/40">Avg Score</p>
-          <p className="text-xl font-bold" style={{ color: getScoreColor(report.avgScore) }}>
-            {report.avgScore}
-          </p>
-        </div>
-        <div>
-          <p className="text-xs text-white/40">Avg Duration</p>
-          <p className="text-xl font-bold text-white">{report.avgDurationHours}h</p>
-        </div>
-        <div>
-          <p className="text-xs text-white/40">Avg Efficiency</p>
-          <p className="text-xl font-bold text-white">{report.avgEfficiency}%</p>
-        </div>
-      </div>
-
-      {/* Best / Worst */}
-      <div className="grid grid-cols-2 gap-4 mb-4">
-        <div className="bg-green-500/10 rounded-lg p-3">
-          <p className="text-xs text-green-400">Best Night</p>
-          <p className="text-sm text-white">{report.bestNight.nightDate}</p>
-          <p className="text-lg font-bold text-green-400">{report.bestNight.score}</p>
-        </div>
-        <div className="bg-red-500/10 rounded-lg p-3">
-          <p className="text-xs text-red-400">Worst Night</p>
-          <p className="text-sm text-white">{report.worstNight.nightDate}</p>
-          <p className="text-lg font-bold text-red-400">{report.worstNight.score}</p>
-        </div>
-      </div>
-
-      {/* Stage Averages */}
-      <div className="grid grid-cols-3 gap-4 mb-4">
-        <div>
-          <p className="text-xs text-white/40">Deep</p>
-          <p className="text-sm font-medium text-blue-800">{report.avgDeepPercent}%</p>
-        </div>
-        <div>
-          <p className="text-xs text-white/40">REM</p>
-          <p className="text-sm font-medium text-purple-400">{report.avgRemPercent}%</p>
-        </div>
-        <div>
-          <p className="text-xs text-white/40">Core</p>
-          <p className="text-sm font-medium text-blue-400">{report.avgCorePercent}%</p>
-        </div>
-      </div>
-
-      {/* Insights */}
-      {report.insights.length > 0 && (
-        <div className="mb-4">
-          <p className="text-xs text-white/40 mb-2">Insights</p>
-          {report.insights.map((insight, i) => (
-            <p key={i} className="text-sm text-white/70 mb-1">• {insight}</p>
-          ))}
-        </div>
-      )}
-
-      {/* Recommendations */}
-      {report.recommendations.length > 0 && (
-        <div>
-          <p className="text-xs text-white/40 mb-2">Recommendations</p>
-          {report.recommendations.map((rec, i) => (
-            <p key={i} className="text-sm text-amber-300/70 mb-1">→ {rec}</p>
-          ))}
-        </div>
-      )}
-
-      {/* Weekly Breakdown (monthly only) */}
-      {report.weeklyBreakdown.length > 0 && (
-        <div className="mt-4">
-          <p className="text-xs text-white/40 mb-2">Week-over-Week</p>
-          <div className="space-y-2">
-            {report.weeklyBreakdown.map((w, i) => (
-              <div key={i} className="flex justify-between text-sm">
-                <span className="text-white/60">Week of {w.weekStart}</span>
-                <span className="text-white font-medium">{w.avgScore} avg ({w.nights} nights)</span>
-              </div>
-            ))}
-          </div>
-        </div>
-      )}
-    </Card>
-  );
-}
-```
-
-**Step 2: Create ReportsView**
-
-```tsx
-import { useMemo, useState } from 'react';
-import { Section } from '../layout/Section';
-import { ReportCard } from './ReportCard';
-import { generateWeeklyReport, generateMonthlyReport } from '../../lib/reports';
-import type { SleepSession } from '../../providers/types';
-
-interface Props {
-  sessions: SleepSession[];
-}
-
-export function ReportsView({ sessions }: Props) {
-  const [view, setView] = useState<'weekly' | 'monthly'>('weekly');
-
-  const weeklyReport = useMemo(() => {
-    const last7 = sessions.slice(-7);
-    return generateWeeklyReport(last7);
-  }, [sessions]);
-
-  const monthlyReport = useMemo(() => {
-    const last30 = sessions.slice(-30);
-    return generateMonthlyReport(last30);
-  }, [sessions]);
-
-  return (
-    <Section title="Reports">
-      <div className="flex gap-2 mb-4">
-        {(['weekly', 'monthly'] as const).map((v) => (
-          <button
-            key={v}
-            onClick={() => setView(v)}
-            className={`px-3 py-1.5 rounded-lg text-sm font-medium transition-colors ${
-              view === v
-                ? 'bg-white/10 text-white'
-                : 'text-white/40 hover:text-white/60'
-            }`}
-          >
-            {v === 'weekly' ? 'Weekly' : 'Monthly'}
-          </button>
-        ))}
-      </div>
-
-      <ReportCard report={view === 'weekly' ? weeklyReport : monthlyReport} />
-    </Section>
-  );
-}
-```
-
-**Step 3: Add reports section to App.tsx**
-
-In `App.tsx`, add 'reports' as a section and wire up `<ReportsView sessions={sessions} />`.
-
-**Step 4: Verify visually**
-
-Run: `cd sleep-viz && npm run dev`
-Expected: Reports tab shows weekly/monthly reports with stats, insights, recommendations
-
-**Step 5: Commit**
-
-```bash
-git add sleep-viz/src/components/reports/ sleep-viz/src/App.tsx
-git commit -m "feat: add weekly/monthly reports UI (PWA)"
-```
-
----
-
-### Task 11: PWA Sleep Goals — Tests
-
-**Files:**
-- Create: `sleep-viz/src/test/goals.test.ts`
-
-**Step 1: Write failing tests**
-
-```typescript
-import { describe, it, expect } from 'vitest';
-import {
-  checkGoalMet,
-  computeStreak,
-  computeOptimalBedtime,
-  type SleepGoal,
-} from '../lib/goals';
-import type { SleepSession } from '../providers/types';
-
-function makeSession(nightDate: string, overrides?: Partial<SleepSession>): SleepSession {
-  return {
-    id: `s-${nightDate}`,
-    nightDate,
-    startDate: new Date(`${nightDate}T23:00:00`),
-    endDate: new Date(`${nightDate}T07:00:00`),
-    stages: [],
-    score: { overall: 75, duration: 80, efficiency: 85, deepSleep: 70, rem: 70, latency: 90, waso: 90, isFallback: false },
-    sourceName: 'Apple Watch',
-    sourceNames: ['Apple Watch'],
-    timeInBed: 480,
-    totalSleepTime: 480,
-    sleepEfficiency: 87.5,
-    sleepLatency: 10,
-    waso: 15,
-    deepMinutes: 60,
-    remMinutes: 90,
-    coreMinutes: 240,
-    awakeMinutes: 30,
-    deepPercent: 14.3,
-    remPercent: 21.4,
-    corePercent: 57.1,
-    awakePercent: 7.1,
-    avgHeartRate: 58,
-    minHeartRate: 48,
-    avgHrv: 42,
-    avgSpo2: 96,
-    avgRespiratoryRate: 14,
-    ...overrides,
-  } as SleepSession;
-}
-
-describe('checkGoalMet', () => {
-  it('duration goal: met when totalSleepTime >= target', () => {
-    const goal: SleepGoal = { type: 'duration', target: 480 };
-    const session = makeSession('2026-03-01', { totalSleepTime: 490 });
-    expect(checkGoalMet(goal, session)).toBe(true);
-  });
-
-  it('duration goal: not met when below target', () => {
-    const goal: SleepGoal = { type: 'duration', target: 480 };
-    const session = makeSession('2026-03-01', { totalSleepTime: 400 });
-    expect(checkGoalMet(goal, session)).toBe(false);
-  });
-
-  it('bedtime goal: met when bedtime within window', () => {
-    const goal: SleepGoal = { type: 'bedtime', targetStart: 22 * 60 + 30, targetEnd: 23 * 60 }; // 10:30-11:00 PM
-    const session = makeSession('2026-03-01', { startDate: new Date('2026-03-01T22:45:00') });
-    expect(checkGoalMet(goal, session)).toBe(true);
-  });
-
-  it('score goal: met when score >= target', () => {
-    const goal: SleepGoal = { type: 'score', target: 75 };
-    const session = makeSession('2026-03-01', {
-      score: { overall: 80, duration: 80, efficiency: 80, deepSleep: 80, rem: 80, latency: 80, waso: 80, isFallback: false },
-    });
-    expect(checkGoalMet(goal, session)).toBe(true);
-  });
-});
-
-describe('computeStreak', () => {
-  it('counts consecutive nights meeting goal from most recent', () => {
-    const goal: SleepGoal = { type: 'score', target: 70 };
-    const sessions = [
-      makeSession('2026-02-27', { score: { overall: 60, duration: 60, efficiency: 60, deepSleep: 60, rem: 60, latency: 60, waso: 60, isFallback: false } }),
-      makeSession('2026-02-28', { score: { overall: 75, duration: 80, efficiency: 80, deepSleep: 80, rem: 80, latency: 80, waso: 80, isFallback: false } }),
-      makeSession('2026-03-01', { score: { overall: 80, duration: 80, efficiency: 80, deepSleep: 80, rem: 80, latency: 80, waso: 80, isFallback: false } }),
-    ];
-    expect(computeStreak(goal, sessions)).toBe(2);
-  });
-
-  it('returns 0 when latest night does not meet goal', () => {
-    const goal: SleepGoal = { type: 'score', target: 90 };
-    const sessions = [makeSession('2026-03-01', { score: { overall: 70, duration: 70, efficiency: 70, deepSleep: 70, rem: 70, latency: 70, waso: 70, isFallback: false } })];
-    expect(computeStreak(goal, sessions)).toBe(0);
-  });
-});
-
-describe('computeOptimalBedtime', () => {
-  it('finds bedtime window of top-scoring nights', () => {
-    const sessions = [
-      makeSession('2026-02-25', { startDate: new Date('2026-02-25T22:30:00'), score: { overall: 92, duration: 95, efficiency: 90, deepSleep: 90, rem: 90, latency: 95, waso: 95, isFallback: false } }),
-      makeSession('2026-02-26', { startDate: new Date('2026-02-26T22:45:00'), score: { overall: 88, duration: 90, efficiency: 85, deepSleep: 85, rem: 85, latency: 90, waso: 90, isFallback: false } }),
-      makeSession('2026-02-27', { startDate: new Date('2026-02-28T01:00:00'), score: { overall: 55, duration: 50, efficiency: 60, deepSleep: 50, rem: 50, latency: 60, waso: 60, isFallback: false } }),
-      makeSession('2026-02-28', { startDate: new Date('2026-02-28T22:15:00'), score: { overall: 90, duration: 92, efficiency: 88, deepSleep: 88, rem: 88, latency: 92, waso: 92, isFallback: false } }),
-    ];
-    const result = computeOptimalBedtime(sessions);
-    expect(result).not.toBeNull();
-    // Top 3 bedtimes: 22:15, 22:30, 22:45 → window around 10:15-10:45 PM
-    expect(result!.startHour).toBeGreaterThanOrEqual(22);
-    expect(result!.endHour).toBeLessThanOrEqual(23);
-  });
-
-  it('returns null with fewer than 7 sessions', () => {
-    const sessions = [makeSession('2026-03-01')];
-    expect(computeOptimalBedtime(sessions)).toBeNull();
-  });
-});
-```
-
-**Step 2: Run to verify failure**
-
-Run: `cd sleep-viz && npx vitest run src/test/goals.test.ts`
-Expected: FAIL
-
-**Step 3: Commit**
-
-```bash
-git add sleep-viz/src/test/goals.test.ts
-git commit -m "test: add sleep goals tests (red)"
-```
-
----
-
-### Task 12: PWA Sleep Goals — Implementation
-
-**Files:**
-- Create: `sleep-viz/src/lib/goals.ts`
-- Modify: `sleep-viz/src/db/schema.ts` (add goals table)
-
-**Step 1: Implement goals engine**
-
-```typescript
-import type { SleepSession } from '../providers/types';
-
-export interface SleepGoal {
-  type: 'duration' | 'bedtime' | 'score';
-  target?: number;       // minutes for duration, score for score goal
-  targetStart?: number;  // minutes from midnight for bedtime window start
-  targetEnd?: number;    // minutes from midnight for bedtime window end
-}
-
-export interface GoalConfig {
-  id: string;
-  goals: SleepGoal[];
-  createdAt: string;
-}
-
-export interface OptimalBedtime {
-  startHour: number;
-  startMinute: number;
-  endHour: number;
-  endMinute: number;
-}
-
-export function checkGoalMet(goal: SleepGoal, session: SleepSession): boolean {
-  switch (goal.type) {
-    case 'duration':
-      return session.totalSleepTime >= (goal.target ?? 480);
-    case 'score':
-      return session.score.overall >= (goal.target ?? 75);
-    case 'bedtime': {
-      const h = session.startDate.getHours();
-      const m = session.startDate.getMinutes();
-      const bedtimeMin = h * 60 + m;
-      const start = goal.targetStart ?? 22 * 60 + 30;
-      const end = goal.targetEnd ?? 23 * 60;
-      return bedtimeMin >= start && bedtimeMin <= end;
+    // Efficiency: 85%+ = 100 (updated from 90%)
+    static func scoreEfficiency(efficiency: Double) -> Int {
+        if efficiency >= 85 { return 100 }
+        return Int(linearScale(efficiency, min: 65, max: 85))
     }
-    default:
-      return false;
-  }
-}
 
-export function computeStreak(goal: SleepGoal, sessions: SleepSession[]): number {
-  const sorted = [...sessions].sort((a, b) => b.nightDate.localeCompare(a.nightDate));
-  let streak = 0;
-  for (const session of sorted) {
-    if (checkGoalMet(goal, session)) {
-      streak++;
-    } else {
-      break;
+    // Deep: 10-25% = 100 (updated from 15-25%)
+    static func scoreDeepSleep(deepPercent: Double) -> Int {
+        if deepPercent >= 10 && deepPercent <= 25 { return 100 }
+        if deepPercent < 10 { return Int(linearScale(deepPercent, min: 0, max: 10)) }
+        return Int(linearScale(40 - deepPercent, min: 0, max: 15))
     }
-  }
-  return streak;
-}
 
-export function computeOptimalBedtime(sessions: SleepSession[]): OptimalBedtime | null {
-  if (sessions.length < 7) return null;
+    // REM: 20-25% = 100 (tightened from 20-30%)
+    static func scoreRem(remPercent: Double) -> Int {
+        if remPercent >= 20 && remPercent <= 25 { return 100 }
+        if remPercent < 20 { return Int(linearScale(remPercent, min: 0, max: 20)) }
+        return Int(linearScale(40 - remPercent, min: 0, max: 15))
+    }
 
-  // Sort by score, take top third
-  const sorted = [...sessions].sort((a, b) => b.score.overall - a.score.overall);
-  const topCount = Math.max(3, Math.floor(sessions.length / 3));
-  const topSessions = sorted.slice(0, topCount);
+    // Latency: 10-20 min = 100, <5 min = 70 (sleep debt), >45 min = 0
+    static func scoreLatency(latencyMinutes: Double) -> Int {
+        if latencyMinutes < 5 { return 70 }
+        if latencyMinutes >= 10 && latencyMinutes <= 20 { return 100 }
+        if latencyMinutes < 10 { return Int(70 + (latencyMinutes - 5) / 5 * 30) }
+        return Int(clamp(linearScale(45 - latencyMinutes, min: 0, max: 25), min: 0, max: 100))
+    }
 
-  // Get bedtimes in minutes (handling midnight crossing)
-  const bedtimeMinutes = topSessions.map((s) => {
-    const h = s.startDate.getHours();
-    const m = s.startDate.getMinutes();
-    return h < 12 ? h * 60 + m + 1440 : h * 60 + m;
-  });
+    // WASO: ≤20 min = 100 (updated from 10), 60 min = 0
+    static func scoreWaso(wasoMinutes: Double) -> Int {
+        if wasoMinutes <= 20 { return 100 }
+        return Int(linearScale(60 - wasoMinutes, min: 0, max: 40))
+    }
 
-  bedtimeMinutes.sort((a, b) => a - b);
-  const earliest = bedtimeMinutes[0] % 1440;
-  const latest = bedtimeMinutes[bedtimeMinutes.length - 1] % 1440;
+    // NEW: Timing — sleep midpoint between midnight-3AM = 100
+    static func scoreTiming(midpointMinutesFromMidnight: Double) -> Int {
+        // Ideal range: 0 (midnight) to 180 (3AM)
+        // Each hour outside range = -25 points
+        let midpoint = midpointMinutesFromMidnight
+        if midpoint >= 0 && midpoint <= 180 { return 100 }
+        let distanceFromRange: Double
+        if midpoint < 0 {
+            distanceFromRange = abs(midpoint)
+        } else if midpoint > 180 {
+            distanceFromRange = midpoint - 180
+        } else {
+            distanceFromRange = 0
+        }
+        let hoursOff = distanceFromRange / 60.0
+        return Int(clamp(100 - hoursOff * 25, min: 0, max: 100))
+    }
 
-  return {
-    startHour: Math.floor(earliest / 60),
-    startMinute: earliest % 60,
-    endHour: Math.floor(latest / 60),
-    endMinute: latest % 60,
-  };
-}
-```
+    // NEW: Restoration — sleeping HR vs resting HR
+    static func scoreRestoration(sleepingHR: Double, restingHR: Double) -> Int {
+        guard restingHR > 0 else { return 50 }
+        let dropPercent = (restingHR - sleepingHR) / restingHR * 100
+        if dropPercent >= 10 { return 100 }
+        if dropPercent <= 0 { return 30 }
+        // Linear 0% drop = 50, 10% drop = 100
+        return Int(50 + dropPercent * 5)
+    }
 
-**Step 2: Add goals table to DB**
+    // Updated composite
+    static func computeSleepScore(
+        totalSleepTime: Double,
+        sleepEfficiency: Double,
+        deepPercent: Double,
+        remPercent: Double,
+        sleepLatency: Double,
+        waso: Double,
+        hasStages: Bool,
+        midpointMinutesFromMidnight: Double,
+        sleepingHR: Double,
+        restingHR: Double
+    ) -> SleepScoreData {
+        let dur = scoreDuration(totalSleepMinutes: totalSleepTime)
+        let eff = scoreEfficiency(efficiency: sleepEfficiency)
+        let lat = scoreLatency(latencyMinutes: sleepLatency)
+        let w = scoreWaso(wasoMinutes: waso)
+        let tim = scoreTiming(midpointMinutesFromMidnight: midpointMinutesFromMidnight)
+        let res = scoreRestoration(sleepingHR: sleepingHR, restingHR: restingHR)
 
-In `sleep-viz/src/db/schema.ts`, bump version to 3 and add:
-
-```typescript
-goalConfigs!: Table<GoalConfig, string>;
-
-// In version 3 stores:
-goalConfigs: 'id',
-```
-
-**Step 3: Run tests**
-
-Run: `cd sleep-viz && npx vitest run src/test/goals.test.ts`
-Expected: All PASS
-
-**Step 4: Commit**
-
-```bash
-git add sleep-viz/src/lib/goals.ts sleep-viz/src/db/schema.ts
-git commit -m "feat: add sleep goals engine (PWA)"
-```
-
----
-
-### Task 13: PWA Goals UI
-
-**Files:**
-- Create: `sleep-viz/src/components/goals/GoalsView.tsx`
-- Create: `sleep-viz/src/components/goals/StreakCalendar.tsx`
-- Create: `sleep-viz/src/components/goals/GoalSettings.tsx`
-- Modify: `sleep-viz/src/App.tsx` (add goals section)
-
-**Step 1: Create StreakCalendar component**
-
-A visual grid showing the last 30 nights as green (met) / red (missed) dots.
-
-```tsx
-import type { SleepSession } from '../../providers/types';
-import type { SleepGoal } from '../../lib/goals';
-import { checkGoalMet } from '../../lib/goals';
-
-interface Props {
-  sessions: SleepSession[];
-  goal: SleepGoal;
-}
-
-export function StreakCalendar({ sessions, goal }: Props) {
-  const last30 = sessions.slice(-30);
-  const sessionMap = new Map(last30.map((s) => [s.nightDate, s]));
-
-  // Generate last 30 dates
-  const dates: string[] = [];
-  const now = new Date();
-  for (let i = 29; i >= 0; i--) {
-    const d = new Date(now);
-    d.setDate(d.getDate() - i);
-    dates.push(d.toISOString().slice(0, 10));
-  }
-
-  return (
-    <div className="grid grid-cols-10 gap-1.5">
-      {dates.map((date) => {
-        const session = sessionMap.get(date);
-        const met = session ? checkGoalMet(goal, session) : null;
-        return (
-          <div
-            key={date}
-            className={`w-5 h-5 rounded-sm ${
-              met === null
-                ? 'bg-white/5'
-                : met
-                  ? 'bg-green-500/60'
-                  : 'bg-red-500/40'
-            }`}
-            title={`${date}: ${met === null ? 'No data' : met ? 'Met' : 'Missed'}`}
-          />
-        );
-      })}
-    </div>
-  );
+        if hasStages {
+            let dep = scoreDeepSleep(deepPercent: deepPercent)
+            let rem = scoreRem(remPercent: remPercent)
+            let overall = Int(
+                Double(dur) * ScoreWeights.duration +
+                Double(eff) * ScoreWeights.efficiency +
+                Double(dep) * ScoreWeights.deepSleep +
+                Double(rem) * ScoreWeights.rem +
+                Double(lat) * ScoreWeights.latency +
+                Double(w) * ScoreWeights.waso +
+                Double(tim) * ScoreWeights.timing +
+                Double(res) * ScoreWeights.restoration
+            )
+            return SleepScoreData(
+                overall: min(100, max(0, overall)),
+                duration: dur, efficiency: eff, deepSleep: dep, rem: rem,
+                latency: lat, waso: w, timing: tim, restoration: res,
+                isFallback: false
+            )
+        } else {
+            let overall = Int(
+                Double(dur) * ScoreWeightsFallback.duration +
+                Double(eff) * ScoreWeightsFallback.efficiency +
+                Double(lat) * ScoreWeightsFallback.latency +
+                Double(w) * ScoreWeightsFallback.waso +
+                Double(tim) * ScoreWeightsFallback.timing +
+                Double(res) * ScoreWeightsFallback.restoration
+            )
+            return SleepScoreData(
+                overall: min(100, max(0, overall)),
+                duration: dur, efficiency: eff, deepSleep: 0, rem: 0,
+                latency: lat, waso: w, timing: tim, restoration: res,
+                isFallback: true
+            )
+        }
+    }
 }
 ```
 
-**Step 2: Create GoalSettings component**
+**Step 4: Update SyncManager to pass new parameters**
 
-A simple form for setting duration target (hours), bedtime window (start/end), and score target.
+In `SyncManager.swift`, when calling `computeSleepScore`, compute the sleep midpoint and pass `sleepingHR` (avgHeartRate from biometrics) and `restingHR` (from HealthKit resting HR):
 
-```tsx
-import { useState } from 'react';
-import { Card } from '../layout/Card';
-import type { SleepGoal } from '../../lib/goals';
+```swift
+// Compute midpoint
+let midpoint = startDate.timeIntervalSince(startDate.startOfDay) / 60.0
+let sleepMidpointMin = midpoint + (stats.timeInBed / 2.0)
+// Normalize: if past midnight, subtract 1440
+let normalizedMidpoint = sleepMidpointMin >= 1440 ? sleepMidpointMin - 1440 : sleepMidpointMin
 
-interface Props {
-  goals: SleepGoal[];
-  onSave: (goals: SleepGoal[]) => void;
-}
+let restingHRSamples = try await healthKit.fetchRestingHeartRate(
+    from: Calendar.current.date(byAdding: .day, value: -1, to: startDate)!,
+    to: endDate
+)
+let restingHR = restingHRSamples.isEmpty ? 0 : restingHRSamples.map(\.value).reduce(0, +) / Double(restingHRSamples.count)
 
-export function GoalSettings({ goals, onSave }: Props) {
-  const durationGoal = goals.find((g) => g.type === 'duration');
-  const bedtimeGoal = goals.find((g) => g.type === 'bedtime');
-  const scoreGoal = goals.find((g) => g.type === 'score');
-
-  const [durationHours, setDurationHours] = useState(
-    durationGoal ? (durationGoal.target ?? 480) / 60 : 8
-  );
-  const [scoreTarget, setScoreTarget] = useState(scoreGoal?.target ?? 75);
-  const [bedtimeStart, setBedtimeStart] = useState(
-    bedtimeGoal?.targetStart ?? 22 * 60 + 30
-  );
-  const [bedtimeEnd, setBedtimeEnd] = useState(
-    bedtimeGoal?.targetEnd ?? 23 * 60
-  );
-
-  function handleSave() {
-    onSave([
-      { type: 'duration', target: durationHours * 60 },
-      { type: 'score', target: scoreTarget },
-      { type: 'bedtime', targetStart: bedtimeStart, targetEnd: bedtimeEnd },
-    ]);
-  }
-
-  const formatTime = (min: number) => {
-    const h = Math.floor(min / 60);
-    const m = min % 60;
-    const period = h >= 12 ? 'PM' : 'AM';
-    const displayH = h > 12 ? h - 12 : h === 0 ? 12 : h;
-    return `${displayH}:${String(m).padStart(2, '0')} ${period}`;
-  };
-
-  return (
-    <Card>
-      <h3 className="text-sm font-medium text-white/60 mb-4">Goal Settings</h3>
-      <div className="space-y-4">
-        <div>
-          <label className="text-xs text-white/40">Sleep Duration Target</label>
-          <input
-            type="range"
-            min={6}
-            max={10}
-            step={0.5}
-            value={durationHours}
-            onChange={(e) => setDurationHours(Number(e.target.value))}
-            className="w-full mt-1"
-          />
-          <span className="text-sm text-white">{durationHours}h</span>
-        </div>
-        <div>
-          <label className="text-xs text-white/40">Score Target</label>
-          <input
-            type="range"
-            min={50}
-            max={95}
-            step={5}
-            value={scoreTarget}
-            onChange={(e) => setScoreTarget(Number(e.target.value))}
-            className="w-full mt-1"
-          />
-          <span className="text-sm text-white">{scoreTarget}+</span>
-        </div>
-        <div>
-          <label className="text-xs text-white/40">Bedtime Window</label>
-          <p className="text-sm text-white">{formatTime(bedtimeStart)} — {formatTime(bedtimeEnd)}</p>
-        </div>
-        <button
-          onClick={handleSave}
-          className="w-full py-2 rounded-lg bg-blue-600 text-white text-sm font-medium hover:bg-blue-500 transition-colors"
-        >
-          Save Goals
-        </button>
-      </div>
-    </Card>
-  );
-}
+let score = SleepScoringEngine.computeSleepScore(
+    totalSleepTime: stats.totalSleepTime,
+    sleepEfficiency: stats.sleepEfficiency,
+    deepPercent: stats.deepPercent,
+    remPercent: stats.remPercent,
+    sleepLatency: stats.sleepLatency,
+    waso: stats.waso,
+    hasStages: !stageIntervals.isEmpty,
+    midpointMinutesFromMidnight: normalizedMidpoint,
+    sleepingHR: biometrics.avgHeartRate ?? 0,
+    restingHR: restingHR
+)
 ```
 
-**Step 3: Create GoalsView**
+**Step 5: Run tests**
 
-```tsx
-import { useState, useMemo } from 'react';
-import { Section } from '../layout/Section';
-import { Card } from '../layout/Card';
-import { StreakCalendar } from './StreakCalendar';
-import { GoalSettings } from './GoalSettings';
-import { computeStreak, computeOptimalBedtime, type SleepGoal } from '../../lib/goals';
-import type { SleepSession } from '../../providers/types';
-
-interface Props {
-  sessions: SleepSession[];
-}
-
-const DEFAULT_GOALS: SleepGoal[] = [
-  { type: 'duration', target: 480 },
-  { type: 'score', target: 75 },
-  { type: 'bedtime', targetStart: 22 * 60 + 30, targetEnd: 23 * 60 },
-];
-
-export function GoalsView({ sessions }: Props) {
-  const [goals, setGoals] = useState<SleepGoal[]>(DEFAULT_GOALS);
-
-  const streaks = useMemo(
-    () => goals.map((g) => ({ goal: g, streak: computeStreak(g, sessions) })),
-    [goals, sessions]
-  );
-
-  const optimalBedtime = useMemo(
-    () => computeOptimalBedtime(sessions),
-    [sessions]
-  );
-
-  const formatTime = (h: number, m: number) => {
-    const period = h >= 12 ? 'PM' : 'AM';
-    const displayH = h > 12 ? h - 12 : h === 0 ? 12 : h;
-    return `${displayH}:${String(m).padStart(2, '0')} ${period}`;
-  };
-
-  const goalLabels: Record<string, string> = {
-    duration: 'Duration',
-    score: 'Score',
-    bedtime: 'Bedtime',
-  };
-
-  return (
-    <Section title="Goals">
-      {/* Streak Summary */}
-      <div className="grid grid-cols-3 gap-3 mb-6">
-        {streaks.map(({ goal, streak }) => (
-          <Card key={goal.type}>
-            <p className="text-xs text-white/40">{goalLabels[goal.type]}</p>
-            <p className="text-2xl font-bold text-white">{streak}</p>
-            <p className="text-xs text-white/40">night streak</p>
-          </Card>
-        ))}
-      </div>
-
-      {/* Streak Calendar (primary goal) */}
-      {goals[0] && (
-        <Card>
-          <h3 className="text-sm font-medium text-white/60 mb-3">
-            {goalLabels[goals[0].type]} — Last 30 Nights
-          </h3>
-          <StreakCalendar sessions={sessions} goal={goals[0]} />
-        </Card>
-      )}
-
-      {/* Optimal Bedtime */}
-      {optimalBedtime && (
-        <Card>
-          <h3 className="text-sm font-medium text-white/60 mb-2">Optimal Bedtime</h3>
-          <p className="text-lg font-bold text-amber-400">
-            {formatTime(optimalBedtime.startHour, optimalBedtime.startMinute)} —{' '}
-            {formatTime(optimalBedtime.endHour, optimalBedtime.endMinute)}
-          </p>
-          <p className="text-xs text-white/40 mt-1">
-            Based on your top-scoring nights from the last 30 days
-          </p>
-        </Card>
-      )}
-
-      {/* Goal Settings */}
-      <div className="mt-6">
-        <GoalSettings goals={goals} onSave={setGoals} />
-      </div>
-    </Section>
-  );
-}
-```
-
-**Step 4: Wire into App.tsx**
-
-Add 'goals' section to App routing and render `<GoalsView sessions={sessions} />`.
-
-**Step 5: Verify visually**
-
-Run: `cd sleep-viz && npm run dev`
-Expected: Goals tab shows streaks, calendar, optimal bedtime, and settings
+Run: Xcode Cmd+U
+Expected: All scoring tests PASS
 
 **Step 6: Commit**
 
 ```bash
-git add sleep-viz/src/components/goals/ sleep-viz/src/App.tsx
-git commit -m "feat: add sleep goals and tracking UI (PWA)"
+git add Amir-SleepApp/
+git commit -m "feat: update scoring algorithm to industry best practices (iOS)"
 ```
 
 ---
 
-### Task 14: iOS — Coaching Tips Engine
+### Task 4: iOS — Add Supabase SDK and Auth
+
+**Files:**
+- Modify: `Amir-SleepApp/Amir-SleepApp.xcodeproj` (add package dependency)
+- Create: `Amir-SleepApp/Amir-SleepApp/Services/SupabaseClient.swift`
+- Modify: `Amir-SleepApp/Amir-SleepApp/Views/Amir_SleepAppApp.swift` (add auth gate)
+
+**Step 1: Add supabase-swift package**
+
+In Xcode: File → Add Package Dependencies → URL: `https://github.com/supabase/supabase-swift` → Add Package.
+
+**Step 2: Create SupabaseClient singleton**
+
+Create `Amir-SleepApp/Amir-SleepApp/Services/SupabaseClient.swift`:
+
+```swift
+import Foundation
+import Supabase
+
+enum AppSupabase {
+    static let client = SupabaseClient(
+        supabaseURL: URL(string: Secrets.supabaseURL)!,
+        supabaseKey: Secrets.supabaseAnonKey
+    )
+}
+
+// Store in a plist or environment — not in source control
+private enum Secrets {
+    static let supabaseURL = Bundle.main.infoDictionary?["SUPABASE_URL"] as? String ?? ""
+    static let supabaseAnonKey = Bundle.main.infoDictionary?["SUPABASE_ANON_KEY"] as? String ?? ""
+}
+```
+
+**Step 3: Add Apple Sign-In flow**
+
+Create `Amir-SleepApp/Amir-SleepApp/Views/Auth/SignInView.swift`:
+
+```swift
+import SwiftUI
+import AuthenticationServices
+import Supabase
+
+struct SignInView: View {
+    @State private var isSigningIn = false
+    @State private var error: String?
+
+    var body: some View {
+        ZStack {
+            AppTheme.background.ignoresSafeArea()
+            VStack(spacing: 32) {
+                Spacer()
+                Image(systemName: "moon.zzz.fill")
+                    .font(.system(size: 64))
+                    .foregroundColor(.purple)
+                Text("SleepViz")
+                    .font(.largeTitle).bold()
+                    .foregroundColor(.white)
+                Text("Your personalized sleep dashboard")
+                    .font(.subheadline)
+                    .foregroundColor(.white.opacity(0.6))
+                Spacer()
+
+                SignInWithAppleButton(.signIn) { request in
+                    request.requestedScopes = [.email, .fullName]
+                } onCompletion: { result in
+                    Task { await handleSignIn(result: result) }
+                }
+                .signInWithAppleButtonStyle(.white)
+                .frame(height: 50)
+                .cornerRadius(12)
+                .padding(.horizontal, 40)
+
+                if let error {
+                    Text(error)
+                        .font(.caption)
+                        .foregroundColor(.red)
+                }
+                Spacer().frame(height: 40)
+            }
+        }
+    }
+
+    private func handleSignIn(result: Result<ASAuthorization, Error>) async {
+        isSigningIn = true
+        defer { isSigningIn = false }
+        do {
+            guard case .success(let auth) = result,
+                  let credential = auth.credential as? ASAuthorizationAppleIDCredential,
+                  let identityToken = credential.identityToken,
+                  let tokenString = String(data: identityToken, encoding: .utf8)
+            else {
+                error = "Apple Sign-In failed"
+                return
+            }
+            try await AppSupabase.client.auth.signInWithIdToken(
+                credentials: .init(provider: .apple, idToken: tokenString)
+            )
+        } catch {
+            self.error = error.localizedDescription
+        }
+    }
+}
+```
+
+**Step 4: Add auth gate to app entry point**
+
+In `Amir_SleepAppApp.swift`, observe Supabase auth state and show `SignInView` or `MainTabView`:
+
+```swift
+@main
+struct Amir_SleepAppApp: App {
+    @State private var syncManager = SyncManager()
+    @State private var isAuthenticated = false
+    let modelContainer: ModelContainer
+
+    init() {
+        // ... existing init code ...
+    }
+
+    var body: some Scene {
+        WindowGroup {
+            Group {
+                if isAuthenticated {
+                    MainTabView()
+                        .environment(syncManager)
+                } else {
+                    SignInView()
+                }
+            }
+            .preferredColorScheme(.dark)
+            .task {
+                // Check existing session
+                if let _ = try? await AppSupabase.client.auth.session {
+                    isAuthenticated = true
+                }
+                // Listen for auth changes
+                for await state in AppSupabase.client.auth.authStateChanges {
+                    isAuthenticated = state.session != nil
+                }
+            }
+        }
+        .modelContainer(modelContainer)
+    }
+}
+```
+
+**Step 5: Build and verify**
+
+Run: Xcode Cmd+B
+Expected: Build succeeds
+
+**Step 6: Commit**
+
+```bash
+git add Amir-SleepApp/
+git commit -m "feat: add Supabase auth with Apple Sign-In (iOS)"
+```
+
+---
+
+### Task 5: iOS — Supabase Sync in SyncManager
+
+**Files:**
+- Modify: `Amir-SleepApp/Amir-SleepApp/Services/SyncManager.swift`
+
+**Step 1: Add Supabase upsert after local save**
+
+Add a new method to SyncManager and call it at the end of `sync()`:
+
+```swift
+private func pushToSupabase(session: SleepSession, modelContext: ModelContext) async throws {
+    guard let userId = AppSupabase.client.auth.currentUser?.id else { return }
+
+    let payload: [String: AnyJSON] = [
+        "user_id": .string(userId.uuidString),
+        "night_date": .string(session.nightDate),
+        "start_date": .string(ISO8601DateFormatter().string(from: session.startDate)),
+        "end_date": .string(ISO8601DateFormatter().string(from: session.endDate)),
+        "time_in_bed": .double(session.stats.timeInBed),
+        "total_sleep_time": .double(session.stats.totalSleepTime),
+        "sleep_efficiency": .double(session.stats.sleepEfficiency),
+        "sleep_latency": .double(session.stats.sleepLatency),
+        "waso": .double(session.stats.waso),
+        "deep_minutes": .double(session.stats.deepMinutes),
+        "rem_minutes": .double(session.stats.remMinutes),
+        "core_minutes": .double(session.stats.coreMinutes),
+        "awake_minutes": .double(session.stats.awakeMinutes),
+        "deep_percent": .double(session.stats.deepPercent),
+        "rem_percent": .double(session.stats.remPercent),
+        "core_percent": .double(session.stats.corePercent),
+        "awake_percent": .double(session.stats.awakePercent),
+        "score_overall": .integer(session.score.overall),
+        "score_duration": .integer(session.score.duration),
+        "score_efficiency": .integer(session.score.efficiency),
+        "score_deep": .integer(session.score.deepSleep),
+        "score_rem": .integer(session.score.rem),
+        "score_latency": .integer(session.score.latency),
+        "score_waso": .integer(session.score.waso),
+        "score_timing": .integer(session.score.timing),
+        "score_restoration": .integer(session.score.restoration),
+        "is_fallback": .bool(session.isFallback),
+        "avg_heart_rate": session.biometrics.avgHeartRate.map { .double($0) } ?? .null,
+        "min_heart_rate": session.biometrics.minHeartRate.map { .double($0) } ?? .null,
+        "avg_hrv": session.biometrics.avgHrv.map { .double($0) } ?? .null,
+        "avg_spo2": session.biometrics.avgSpo2.map { .double($0) } ?? .null,
+        "avg_respiratory_rate": session.biometrics.avgRespiratoryRate.map { .double($0) } ?? .null,
+        "source_name": .string("Apple Watch"),
+    ]
+
+    try await AppSupabase.client
+        .from("sleep_sessions")
+        .upsert(payload, onConflict: "user_id,night_date")
+        .execute()
+}
+
+private func pushReadinessToSupabase(record: ReadinessRecord) async throws {
+    guard let userId = AppSupabase.client.auth.currentUser?.id else { return }
+
+    let payload: [String: AnyJSON] = [
+        "user_id": .string(userId.uuidString),
+        "date": .string(record.date),
+        "score": .integer(record.score),
+        "hrv_baseline": .double(record.hrvBaseline),
+        "hrv_current": .double(record.hrvCurrent),
+        "resting_hr_baseline": .double(record.restingHRBaseline),
+        "resting_hr_current": .double(record.restingHRCurrent),
+        "sleep_score_contribution": .integer(record.sleepScoreContribution),
+    ]
+
+    try await AppSupabase.client
+        .from("readiness_records")
+        .upsert(payload, onConflict: "user_id,date")
+        .execute()
+}
+```
+
+Then at the end of the `sync()` method, after inserting each session into SwiftData, call:
+
+```swift
+try? await pushToSupabase(session: newSession, modelContext: modelContext)
+```
+
+And after inserting each readiness record:
+
+```swift
+try? await pushReadinessToSupabase(record: newRecord)
+```
+
+**Step 2: Build and verify**
+
+Run: Xcode Cmd+B
+Expected: Build succeeds
+
+**Step 3: Commit**
+
+```bash
+git add Amir-SleepApp/Amir-SleepApp/Services/SyncManager.swift
+git commit -m "feat: push sleep data to Supabase after HealthKit sync (iOS)"
+```
+
+---
+
+## Phase 3: iOS — New Features
+
+### Task 6: iOS — Coaching Tips
 
 **Files:**
 - Create: `Amir-SleepApp/Amir-SleepApp/Services/CoachingEngine.swift`
+- Create: `Amir-SleepApp/Amir-SleepApp/Views/Today/CoachingTipsCard.swift`
+- Modify: `Amir-SleepApp/Amir-SleepApp/Views/Today/TodayView.swift`
 
-**Step 1: Implement coaching engine in Swift**
+**Step 1: Create CoachingEngine**
 
 ```swift
 import Foundation
@@ -1888,223 +772,159 @@ struct CoachingTip: Identifiable {
     let title: String
     let message: String
     let priority: Int
+    enum TipType { case warning, info, positive }
     let type: TipType
-
-    enum TipType {
-        case warning, info, positive
-    }
 }
 
 enum CoachingEngine {
     static func generateTips(sessions: [SleepSession]) -> [CoachingTip] {
         guard let latest = sessions.last else { return [] }
         var tips: [CoachingTip] = []
-
         let recent3 = Array(sessions.suffix(3))
         let recent7 = Array(sessions.suffix(7))
 
-        // Low deep sleep
-        if recent3.count >= 3, recent3.allSatisfy({ $0.stats.deepPercent < 15 }) {
-            tips.append(CoachingTip(
-                id: "low-deep-sleep",
-                title: "Low Deep Sleep",
-                message: "Your deep sleep has been below 15% for the past few nights. Try keeping your room cooler (65-68°F) and avoiding alcohol before bed.",
-                priority: 1,
-                type: .warning
-            ))
+        // Deep sleep < 10% for 3+ nights
+        if recent3.count >= 3, recent3.allSatisfy({ $0.stats.deepPercent < 10 }) {
+            tips.append(.init(id: "low-deep", title: "Low Deep Sleep",
+                message: "Your deep sleep has been below 10% recently. Try keeping your room at 65-68°F and avoiding alcohol before bed.",
+                priority: 1, type: .warning))
         }
-
-        // Low efficiency
+        // Efficiency < 85%
         if latest.stats.sleepEfficiency < 85 {
-            tips.append(CoachingTip(
-                id: "low-efficiency",
-                title: "Low Sleep Efficiency",
-                message: "You're spending too much time awake in bed. Try going to bed only when you feel sleepy.",
-                priority: 2,
-                type: .warning
-            ))
+            tips.append(.init(id: "low-eff", title: "Low Sleep Efficiency",
+                message: "You're spending too much time awake in bed. Go to bed only when sleepy.",
+                priority: 2, type: .warning))
         }
-
-        // High latency
+        // Latency > 30 min
         if latest.stats.sleepLatency > 30 {
-            tips.append(CoachingTip(
-                id: "high-latency",
-                title: "Slow Sleep Onset",
-                message: "You're taking over 30 minutes to fall asleep. Consider a wind-down routine 30 minutes before bed.",
-                priority: 3,
-                type: .warning
-            ))
+            tips.append(.init(id: "high-lat", title: "Slow Sleep Onset",
+                message: "Taking over 30 minutes to fall asleep. Try a wind-down routine with no screens 30 min before bed.",
+                priority: 3, type: .warning))
         }
-
+        // Latency < 5 min (sleep debt)
+        if latest.stats.sleepLatency < 5 {
+            tips.append(.init(id: "sleep-debt", title: "Possible Sleep Debt",
+                message: "Falling asleep in under 5 minutes may indicate sleep deprivation. Try adding 30 minutes to your sleep time.",
+                priority: 2, type: .warning))
+        }
         // Inconsistent bedtime
         if recent7.count >= 5 {
             let bedtimes = recent7.map { s -> Double in
-                let h = Calendar.current.component(.hour, from: s.startDate)
-                let m = Calendar.current.component(.minute, from: s.startDate)
+                let c = Calendar.current
+                let h = c.component(.hour, from: s.startDate)
+                let m = c.component(.minute, from: s.startDate)
                 return Double(h < 12 ? h * 60 + m + 1440 : h * 60 + m)
             }
             let mean = bedtimes.reduce(0, +) / Double(bedtimes.count)
-            let variance = bedtimes.reduce(0) { $0 + ($1 - mean) * ($1 - mean) } / Double(bedtimes.count)
-            if sqrt(variance) > 60 {
-                tips.append(CoachingTip(
-                    id: "inconsistent-bedtime",
-                    title: "Inconsistent Bedtime",
+            let stdDev = sqrt(bedtimes.reduce(0) { $0 + ($1 - mean) * ($1 - mean) } / Double(bedtimes.count))
+            if stdDev > 60 {
+                tips.append(.init(id: "inconsistent", title: "Inconsistent Bedtime",
                     message: "Your bedtime varies by over an hour. A consistent schedule helps your circadian rhythm.",
-                    priority: 4,
-                    type: .info
-                ))
+                    priority: 4, type: .info))
             }
         }
-
         // Declining trend
         if recent7.count >= 7 {
-            let first3Avg = Double(recent7.prefix(3).reduce(0) { $0 + $1.score.overall }) / 3
-            let last3Avg = Double(recent7.suffix(3).reduce(0) { $0 + $1.score.overall }) / 3
-            if last3Avg < first3Avg - 10 {
-                tips.append(CoachingTip(
-                    id: "declining-trend",
-                    title: "Sleep Quality Declining",
-                    message: "Your sleep score has been trending down. Check if anything changed recently.",
-                    priority: 2,
-                    type: .warning
-                ))
+            let first3 = Double(recent7.prefix(3).reduce(0) { $0 + $1.score.overall }) / 3
+            let last3 = Double(recent7.suffix(3).reduce(0) { $0 + $1.score.overall }) / 3
+            if last3 < first3 - 10 {
+                tips.append(.init(id: "declining", title: "Sleep Quality Declining",
+                    message: "Your sleep score has trended down. Check recent changes to stress, caffeine, or exercise.",
+                    priority: 2, type: .warning))
             }
         }
-
-        // Excellent sleep
-        if latest.score.overall >= 90 {
-            tips.append(CoachingTip(
-                id: "excellent-sleep",
-                title: "Excellent Sleep!",
-                message: "Great sleep last night! Whatever you did yesterday, keep it up.",
-                priority: 10,
-                type: .positive
-            ))
+        // Excellent
+        if latest.score.overall >= 85 {
+            tips.append(.init(id: "excellent", title: "Excellent Sleep!",
+                message: "Great sleep last night! Keep it up.", priority: 10, type: .positive))
         }
-
         return Array(tips.sorted { $0.priority < $1.priority }.prefix(3))
     }
 }
 ```
 
-**Step 2: Verify it compiles**
-
-Run: Open Xcode, build the project (Cmd+B)
-Expected: Build succeeds
-
-**Step 3: Commit**
-
-```bash
-git add Amir-SleepApp/Amir-SleepApp/Services/CoachingEngine.swift
-git commit -m "feat: add coaching tips engine (iOS)"
-```
-
----
-
-### Task 15: iOS — Coaching Tips UI
-
-**Files:**
-- Create: `Amir-SleepApp/Amir-SleepApp/Views/Today/CoachingTipsCard.swift`
-- Modify: `Amir-SleepApp/Amir-SleepApp/Views/Today/TodayView.swift`
-
-**Step 1: Create CoachingTipsCard view**
+**Step 2: Create CoachingTipsCard SwiftUI view**
 
 ```swift
 import SwiftUI
 
 struct CoachingTipsCard: View {
     let tips: [CoachingTip]
-
     var body: some View {
         if !tips.isEmpty {
             VStack(alignment: .leading, spacing: 8) {
-                Text("Today's Tips")
-                    .font(.caption)
-                    .foregroundColor(.white.opacity(0.6))
-
+                Text("Today's Tips").font(.caption).foregroundColor(.white.opacity(0.6))
                 ForEach(tips) { tip in
                     HStack(alignment: .top, spacing: 12) {
-                        tipIcon(tip.type)
-                            .font(.system(size: 16))
-                            .frame(width: 20)
-
+                        Group {
+                            switch tip.type {
+                            case .warning: Image(systemName: "exclamationmark.triangle.fill").foregroundColor(.orange)
+                            case .info: Image(systemName: "lightbulb.fill").foregroundColor(.blue)
+                            case .positive: Image(systemName: "star.fill").foregroundColor(.green)
+                            }
+                        }.font(.system(size: 16)).frame(width: 20)
                         VStack(alignment: .leading, spacing: 4) {
-                            Text(tip.title)
-                                .font(.subheadline)
-                                .fontWeight(.medium)
-                                .foregroundColor(.white)
-                            Text(tip.message)
-                                .font(.caption)
-                                .foregroundColor(.white.opacity(0.5))
+                            Text(tip.title).font(.subheadline).fontWeight(.medium).foregroundColor(.white)
+                            Text(tip.message).font(.caption).foregroundColor(.white.opacity(0.5))
                         }
                     }
                     .padding(12)
                     .background(AppTheme.cardBackground)
                     .cornerRadius(12)
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 12)
-                            .stroke(AppTheme.cardBorder, lineWidth: 1)
-                    )
+                    .overlay(RoundedRectangle(cornerRadius: 12).stroke(AppTheme.cardBorder))
                 }
             }
-        }
-    }
-
-    @ViewBuilder
-    private func tipIcon(_ type: CoachingTip.TipType) -> some View {
-        switch type {
-        case .warning:
-            Image(systemName: "exclamationmark.triangle.fill")
-                .foregroundColor(.orange)
-        case .info:
-            Image(systemName: "lightbulb.fill")
-                .foregroundColor(.blue)
-        case .positive:
-            Image(systemName: "star.fill")
-                .foregroundColor(.green)
         }
     }
 }
 ```
 
-**Step 2: Add to TodayView**
+**Step 3: Add to TodayView**
 
-In `TodayView.swift`, query recent sessions from SwiftData, call `CoachingEngine.generateTips(sessions:)`, and render `CoachingTipsCard(tips:)` below the existing content.
+In `TodayView.swift`, query recent sessions with `@Query(sort: \SleepSession.nightDate)`, call `CoachingEngine.generateTips(sessions:)`, and render `CoachingTipsCard(tips:)` below the existing insight card.
 
-**Step 3: Build and verify**
+**Step 4: Build and verify**
 
-Run: Xcode build (Cmd+B)
+Run: Xcode Cmd+B
 Expected: Build succeeds
 
-**Step 4: Commit**
+**Step 5: Commit**
 
 ```bash
-git add Amir-SleepApp/Amir-SleepApp/Views/Today/CoachingTipsCard.swift Amir-SleepApp/Amir-SleepApp/Views/Today/TodayView.swift
-git commit -m "feat: add coaching tips UI to iOS TodayView"
+git add Amir-SleepApp/Amir-SleepApp/Services/CoachingEngine.swift Amir-SleepApp/Amir-SleepApp/Views/Today/
+git commit -m "feat: add coaching tips engine and UI (iOS)"
 ```
 
 ---
 
-### Task 16: iOS — Weekly/Monthly Reports
+### Task 7: iOS — Reports
 
 **Files:**
 - Create: `Amir-SleepApp/Amir-SleepApp/Services/ReportEngine.swift`
 - Create: `Amir-SleepApp/Amir-SleepApp/Views/Reports/ReportsView.swift`
 - Create: `Amir-SleepApp/Amir-SleepApp/Views/Reports/ReportCard.swift`
-- Modify: `Amir-SleepApp/Amir-SleepApp/Views/MainTabView.swift` (add Reports tab)
+- Modify: `Amir-SleepApp/Amir-SleepApp/Views/MainTabView.swift`
 
-**Step 1: Implement ReportEngine** — Port `generateWeeklyReport` and `generateMonthlyReport` from TypeScript to Swift, using the same algorithm. Include `SleepReport` struct with identical fields.
+**Step 1: Create ReportEngine** — Port the report generation logic. `SleepReport` struct with avgScore, avgDuration, bestNight, worstNight, trendDirection, insights, recommendations, weeklyBreakdown. `generateWeeklyReport(sessions:)` and `generateMonthlyReport(sessions:)` static functions. Same insight logic: weekend vs weekday comparison, best bedtime correlation.
 
-**Step 2: Create ReportCard view** — SwiftUI card showing avg score, duration, efficiency, best/worst nights, insights, and recommendations. Same layout as PWA ReportCard.
+**Step 2: Create ReportCard** — SwiftUI view showing key stats grid (avg score, duration, efficiency), best/worst night cards (green/red), stage averages, insights list, recommendations list, weekly breakdown (monthly only).
 
-**Step 3: Create ReportsView** — SwiftUI view with a picker toggling between weekly/monthly, querying sessions from SwiftData.
+**Step 3: Create ReportsView** — Picker between weekly/monthly. Query sessions from SwiftData. Pass to ReportEngine. Render ReportCard.
 
-**Step 4: Add Reports tab to MainTabView** — Add a new tab item with `Image(systemName: "chart.bar.doc.horizontal")` and label "Reports".
+**Step 4: Add Reports tab to MainTabView**
+
+Add between Trends and Settings:
+
+```swift
+Tab("Reports", systemImage: "chart.bar.doc.horizontal") {
+    ReportsView()
+}
+```
 
 **Step 5: Build and verify**
 
-Run: Xcode build (Cmd+B)
-Expected: Build succeeds, Reports tab appears
+Run: Xcode Cmd+B
+Expected: Build succeeds, 6 tabs visible
 
 **Step 6: Commit**
 
@@ -2115,76 +935,566 @@ git commit -m "feat: add weekly/monthly reports (iOS)"
 
 ---
 
-### Task 17: iOS — Sleep Goals & Tracking
+### Task 8: iOS — Goals & Tracking
 
 **Files:**
 - Create: `Amir-SleepApp/Amir-SleepApp/Services/GoalsEngine.swift`
-- Create: `Amir-SleepApp/Amir-SleepApp/Models/GoalConfig.swift`
 - Create: `Amir-SleepApp/Amir-SleepApp/Views/Goals/GoalsView.swift`
 - Create: `Amir-SleepApp/Amir-SleepApp/Views/Goals/StreakCalendar.swift`
-- Modify: `Amir-SleepApp/Amir-SleepApp/Views/MainTabView.swift` (add Goals tab)
+- Modify: `Amir-SleepApp/Amir-SleepApp/Views/MainTabView.swift`
 
-**Step 1: Create GoalConfig model** — SwiftData `@Model` with goal type, targets, and streak tracking.
+**Step 1: Create GoalsEngine**
 
-**Step 2: Implement GoalsEngine** — Port `checkGoalMet`, `computeStreak`, and `computeOptimalBedtime` from TypeScript.
+```swift
+import Foundation
 
-**Step 3: Create StreakCalendar** — SwiftUI view with a grid of colored circles for the last 30 nights.
+struct SleepGoalConfig: Codable {
+    var durationTargetMin: Double = 480
+    var scoreTarget: Int = 75
+    var bedtimeStartMin: Int = 1350  // 22:30
+    var bedtimeEndMin: Int = 1380    // 23:00
+}
 
-**Step 4: Create GoalsView** — SwiftUI view showing streak cards, calendar, optimal bedtime, and goal settings form.
+struct OptimalBedtime {
+    let startHour: Int, startMinute: Int
+    let endHour: Int, endMinute: Int
+}
 
-**Step 5: Add Goals tab** — In `MainTabView`, add tab with `Image(systemName: "target")`.
+enum GoalsEngine {
+    static func checkDurationGoalMet(session: SleepSession, target: Double) -> Bool {
+        session.stats.totalSleepTime >= target
+    }
+    static func checkScoreGoalMet(session: SleepSession, target: Int) -> Bool {
+        session.score.overall >= target
+    }
+    static func checkBedtimeGoalMet(session: SleepSession, startMin: Int, endMin: Int) -> Bool {
+        let cal = Calendar.current
+        let h = cal.component(.hour, from: session.startDate)
+        let m = cal.component(.minute, from: session.startDate)
+        let bedtimeMin = h * 60 + m
+        return bedtimeMin >= startMin && bedtimeMin <= endMin
+    }
+
+    static func computeStreak(sessions: [SleepSession], check: (SleepSession) -> Bool) -> Int {
+        var streak = 0
+        for session in sessions.reversed() {
+            if check(session) { streak += 1 } else { break }
+        }
+        return streak
+    }
+
+    static func computeOptimalBedtime(sessions: [SleepSession]) -> OptimalBedtime? {
+        guard sessions.count >= 7 else { return nil }
+        let sorted = sessions.sorted { $0.score.overall > $1.score.overall }
+        let topCount = max(3, sessions.count / 3)
+        let top = Array(sorted.prefix(topCount))
+        let bedtimes = top.map { s -> Int in
+            let cal = Calendar.current
+            let h = cal.component(.hour, from: s.startDate)
+            let m = cal.component(.minute, from: s.startDate)
+            return h < 12 ? h * 60 + m + 1440 : h * 60 + m
+        }.sorted()
+        let earliest = bedtimes.first! % 1440
+        let latest = bedtimes.last! % 1440
+        return OptimalBedtime(
+            startHour: earliest / 60, startMinute: earliest % 60,
+            endHour: latest / 60, endMinute: latest % 60
+        )
+    }
+}
+```
+
+**Step 2: Create StreakCalendar** — SwiftUI LazyVGrid of 30 colored circles (green=met, red=missed, gray=no data).
+
+**Step 3: Create GoalsView** — Shows 3 streak cards, StreakCalendar for primary goal, optimal bedtime card, goal settings form with sliders. Goals persisted to UserDefaults (and synced to Supabase `sleep_goals` table).
+
+**Step 4: Add Goals tab to MainTabView**
+
+```swift
+Tab("Goals", systemImage: "target") {
+    GoalsView()
+}
+```
+
+**Step 5: Sync goals to Supabase** — On save, upsert to `sleep_goals` table. On app launch, fetch from Supabase to seed local config.
 
 **Step 6: Build and verify**
 
-Run: Xcode build (Cmd+B)
-Expected: Build succeeds, Goals tab appears with streak calendar
+Run: Xcode Cmd+B
+Expected: Build succeeds, 7 tabs visible
 
 **Step 7: Commit**
 
 ```bash
-git add Amir-SleepApp/Amir-SleepApp/Services/GoalsEngine.swift Amir-SleepApp/Amir-SleepApp/Models/GoalConfig.swift Amir-SleepApp/Amir-SleepApp/Views/Goals/ Amir-SleepApp/Amir-SleepApp/Views/MainTabView.swift
-git commit -m "feat: add sleep goals and tracking (iOS)"
+git add Amir-SleepApp/Amir-SleepApp/Services/GoalsEngine.swift Amir-SleepApp/Amir-SleepApp/Views/Goals/ Amir-SleepApp/Amir-SleepApp/Views/MainTabView.swift
+git commit -m "feat: add sleep goals and streak tracking (iOS)"
 ```
 
 ---
 
-### Task 18: PWA — Run All Tests and Final Verification
+### Task 9: iOS — Update Settings View
 
-**Files:** None (verification only)
+**Files:**
+- Modify: `Amir-SleepApp/Amir-SleepApp/Views/Settings/SettingsView.swift`
 
-**Step 1: Run all PWA tests**
+**Step 1: Update scoring explanation to reflect new algorithm**
 
-Run: `cd sleep-viz && npx vitest run`
-Expected: All tests pass (sleepScore, statistics, sleepSessions, deduplication, readinessScore, coachingTips, reports, goals)
+Update the scoring info text to show new weights (Duration 30%, Efficiency 15%, Deep 12%, REM 10%, Latency 8%, WASO 8%, Timing 8%, Restoration 9%) and new thresholds.
 
-**Step 2: Run type check**
+**Step 2: Add Account section**
+
+Add section showing signed-in Apple ID email with a Sign Out button that calls `AppSupabase.client.auth.signOut()`.
+
+**Step 3: Add Supabase sync status**
+
+Show last push date, number of sessions synced, and a "Force Resync" button that clears local data and re-syncs from HealthKit + pushes to Supabase.
+
+**Step 4: Build and verify**
+
+Run: Xcode Cmd+B
+Expected: Build succeeds
+
+**Step 5: Commit**
+
+```bash
+git add Amir-SleepApp/Amir-SleepApp/Views/Settings/SettingsView.swift
+git commit -m "feat: update settings with new scoring info and account section (iOS)"
+```
+
+---
+
+## Phase 4: PWA Refactor — Read-Only Supabase Dashboard
+
+### Task 10: PWA — Add Supabase Client and Remove Import
+
+**Files:**
+- Modify: `sleep-viz/package.json` (add @supabase/supabase-js, remove fflate)
+- Create: `sleep-viz/src/lib/supabase.ts`
+- Delete: `sleep-viz/src/providers/SleepDataContext.tsx`
+- Delete: `sleep-viz/src/hooks/useImport.ts`
+- Delete: `sleep-viz/src/lib/parseHealthExport.ts`
+- Delete: `sleep-viz/src/providers/SampleDataProvider.ts` (if exists)
+- Delete: `sleep-viz/src/db/schema.ts`
+- Delete: `sleep-viz/src/components/import/` (entire directory)
+
+**Step 1: Install Supabase JS**
+
+Run: `cd sleep-viz && npm install @supabase/supabase-js && npm uninstall fflate dexie dexie-react-hooks`
+
+**Step 2: Create Supabase client**
+
+Create `sleep-viz/src/lib/supabase.ts`:
+
+```typescript
+import { createClient } from '@supabase/supabase-js';
+
+const supabaseUrl = import.meta.env.VITE_SUPABASE_URL;
+const supabaseAnonKey = import.meta.env.VITE_SUPABASE_ANON_KEY;
+
+export const supabase = createClient(supabaseUrl, supabaseAnonKey);
+```
+
+Create `sleep-viz/.env.example`:
+
+```
+VITE_SUPABASE_URL=https://your-project.supabase.co
+VITE_SUPABASE_ANON_KEY=your-anon-key
+```
+
+**Step 3: Delete import-related files**
+
+Remove the files listed above. These are no longer needed since the iOS app is the sole data source.
+
+**Step 4: Commit**
+
+```bash
+git add -A sleep-viz/
+git commit -m "refactor: replace local DB with Supabase client, remove import (PWA)"
+```
+
+---
+
+### Task 11: PWA — Auth and Data Hooks
+
+**Files:**
+- Create: `sleep-viz/src/hooks/useAuth.ts`
+- Create: `sleep-viz/src/hooks/useSupabaseSessions.ts`
+- Create: `sleep-viz/src/hooks/useSupabaseReadiness.ts`
+- Create: `sleep-viz/src/hooks/useSupabaseGoals.ts`
+- Create: `sleep-viz/src/components/auth/SignIn.tsx`
+
+**Step 1: Create auth hook**
+
+```typescript
+import { useState, useEffect } from 'react';
+import { supabase } from '../lib/supabase';
+import type { User } from '@supabase/supabase-js';
+
+export function useAuth() {
+  const [user, setUser] = useState<User | null>(null);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    supabase.auth.getUser().then(({ data }) => {
+      setUser(data.user);
+      setLoading(false);
+    });
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
+      setUser(session?.user ?? null);
+    });
+    return () => subscription.unsubscribe();
+  }, []);
+
+  const signInWithApple = async () => {
+    await supabase.auth.signInWithOAuth({ provider: 'apple' });
+  };
+
+  const signOut = async () => {
+    await supabase.auth.signOut();
+  };
+
+  return { user, loading, signInWithApple, signOut };
+}
+```
+
+**Step 2: Create sessions hook with realtime**
+
+```typescript
+import { useState, useEffect } from 'react';
+import { supabase } from '../lib/supabase';
+import type { SleepSession } from '../providers/types';
+
+export function useSupabaseSessions(dateRange: '7d' | '30d' | '90d' | 'all') {
+  const [sessions, setSessions] = useState<SleepSession[]>([]);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    const fetchSessions = async () => {
+      setLoading(true);
+      let query = supabase
+        .from('sleep_sessions')
+        .select('*')
+        .order('night_date', { ascending: true });
+
+      if (dateRange !== 'all') {
+        const days = dateRange === '7d' ? 7 : dateRange === '30d' ? 30 : 90;
+        const since = new Date();
+        since.setDate(since.getDate() - days);
+        query = query.gte('night_date', since.toISOString().slice(0, 10));
+      }
+
+      const { data, error } = await query;
+      if (!error && data) {
+        setSessions(data.map(mapRowToSession));
+      }
+      setLoading(false);
+    };
+
+    fetchSessions();
+
+    // Realtime subscription
+    const channel = supabase
+      .channel('sessions-changes')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'sleep_sessions' },
+        () => { fetchSessions(); })
+      .subscribe();
+
+    return () => { supabase.removeChannel(channel); };
+  }, [dateRange]);
+
+  return { sessions, loading };
+}
+
+function mapRowToSession(row: any): SleepSession {
+  return {
+    id: row.id,
+    nightDate: row.night_date,
+    startDate: new Date(row.start_date),
+    endDate: new Date(row.end_date),
+    stages: row.stages ?? [],
+    score: {
+      overall: row.score_overall,
+      duration: row.score_duration,
+      efficiency: row.score_efficiency,
+      deepSleep: row.score_deep,
+      rem: row.score_rem,
+      latency: row.score_latency,
+      waso: row.score_waso,
+      timing: row.score_timing ?? 0,
+      restoration: row.score_restoration ?? 0,
+      isFallback: row.is_fallback,
+    },
+    sourceName: row.source_name ?? 'Apple Watch',
+    sourceNames: [row.source_name ?? 'Apple Watch'],
+    timeInBed: row.time_in_bed,
+    totalSleepTime: row.total_sleep_time,
+    sleepEfficiency: row.sleep_efficiency,
+    sleepLatency: row.sleep_latency,
+    waso: row.waso,
+    deepMinutes: row.deep_minutes,
+    remMinutes: row.rem_minutes,
+    coreMinutes: row.core_minutes,
+    awakeMinutes: row.awake_minutes,
+    deepPercent: row.deep_percent,
+    remPercent: row.rem_percent,
+    corePercent: row.core_percent,
+    awakePercent: row.awake_percent,
+    avgHeartRate: row.avg_heart_rate,
+    minHeartRate: row.min_heart_rate,
+    avgHrv: row.avg_hrv,
+    avgSpo2: row.avg_spo2,
+    avgRespiratoryRate: row.avg_respiratory_rate,
+  };
+}
+```
+
+**Step 3: Create readiness and goals hooks** — Same pattern as sessions hook but querying `readiness_records` and `sleep_goals` tables.
+
+**Step 4: Create SignIn component**
+
+```tsx
+interface Props { onSignIn: () => void; }
+
+export function SignIn({ onSignIn }: Props) {
+  const { signInWithApple } = useAuth();
+  return (
+    <div className="min-h-screen bg-[#0D0D0D] flex flex-col items-center justify-center">
+      <div className="text-6xl mb-4">🌙</div>
+      <h1 className="text-3xl font-bold text-white mb-2">SleepViz</h1>
+      <p className="text-white/40 mb-8">Your personalized sleep dashboard</p>
+      <button
+        onClick={signInWithApple}
+        className="flex items-center gap-2 px-6 py-3 bg-white text-black rounded-xl font-medium hover:bg-white/90 transition-colors"
+      >
+         Sign in with Apple
+      </button>
+    </div>
+  );
+}
+```
+
+**Step 5: Commit**
+
+```bash
+git add sleep-viz/src/
+git commit -m "feat: add Supabase auth, realtime data hooks, sign-in UI (PWA)"
+```
+
+---
+
+### Task 12: PWA — Update App.tsx and Dashboard
+
+**Files:**
+- Modify: `sleep-viz/src/App.tsx`
+- Modify: `sleep-viz/src/components/dashboard/Dashboard.tsx`
+- Modify: `sleep-viz/src/providers/types.ts` (add timing/restoration to SleepScore)
+
+**Step 1: Update SleepScore type**
+
+In `types.ts`, add timing and restoration fields:
+
+```typescript
+interface SleepScore {
+  overall: number;
+  duration: number;
+  efficiency: number;
+  deepSleep: number;
+  rem: number;
+  latency: number;
+  waso: number;
+  timing: number;       // NEW
+  restoration: number;  // NEW
+  isFallback: boolean;
+}
+```
+
+**Step 2: Rewrite App.tsx**
+
+Replace Dexie-based data loading with Supabase hooks. Add auth gate:
+
+```tsx
+import { useAuth } from './hooks/useAuth';
+import { useSupabaseSessions } from './hooks/useSupabaseSessions';
+import { SignIn } from './components/auth/SignIn';
+// ... keep existing component imports for Dashboard, NightDetail, TrendsView
+
+export default function App() {
+  const { user, loading: authLoading } = useAuth();
+  const [activeSection, setActiveSection] = useState('dashboard');
+  const [selectedNight, setSelectedNight] = useState<string | null>(null);
+  const [dateRange, setDateRange] = useState<'7d' | '30d' | '90d' | 'all'>('30d');
+  const { sessions, loading } = useSupabaseSessions(dateRange);
+
+  if (authLoading) return <div className="min-h-screen bg-[#0D0D0D]" />;
+  if (!user) return <SignIn onSignIn={() => {}} />;
+
+  // ... rest of section routing using sessions from Supabase
+}
+```
+
+Remove all references to: `useSleepData`, `useImport`, `SleepDataContext`, `db`, file drop handlers.
+
+**Step 3: Update Dashboard to accept sessions as prop**
+
+The Dashboard currently uses `useSleepData` internally. Refactor it to receive `sessions` as a prop from App.tsx (which now gets them from Supabase), or keep internal hook but replace `useSleepData` with `useSupabaseSessions`.
+
+**Step 4: Run type check**
 
 Run: `cd sleep-viz && npx tsc --noEmit`
 Expected: No type errors
 
-**Step 3: Run lint**
+**Step 5: Commit**
+
+```bash
+git add sleep-viz/src/
+git commit -m "refactor: wire App.tsx and Dashboard to Supabase data (PWA)"
+```
+
+---
+
+### Task 13: PWA — Readiness, Coaching, Reports, Goals UI
+
+**Files:**
+- Create: `sleep-viz/src/lib/readinessScore.ts` (display helpers only — scoring done on iOS)
+- Create: `sleep-viz/src/lib/coachingTips.ts`
+- Create: `sleep-viz/src/lib/reports.ts`
+- Create: `sleep-viz/src/lib/goals.ts`
+- Create: `sleep-viz/src/components/readiness/ReadinessPanel.tsx`
+- Create: `sleep-viz/src/components/dashboard/CoachingTips.tsx`
+- Create: `sleep-viz/src/components/reports/ReportsView.tsx`
+- Create: `sleep-viz/src/components/reports/ReportCard.tsx`
+- Create: `sleep-viz/src/components/goals/GoalsView.tsx`
+- Create: `sleep-viz/src/components/goals/StreakCalendar.tsx`
+- Create: `sleep-viz/src/components/goals/GoalSettings.tsx`
+- Modify: `sleep-viz/src/App.tsx` (add new sections to navigation)
+
+**Step 1: Create readiness display** — `ReadinessPanel` shows score ring (from Supabase readiness_records), contributing factors, and 30-day trend chart. No scoring logic — just display.
+
+**Step 2: Create coaching tips engine** — Same `generateTips()` function as the original plan (Task 6 from old plan). Rules use updated thresholds (deep < 10%, efficiency < 85%, latency < 5 min flag, score 85+ positive). Renders as tip cards on dashboard.
+
+**Step 3: Create reports engine and UI** — Same `generateWeeklyReport()` / `generateMonthlyReport()` as original plan. ReportCard and ReportsView components.
+
+**Step 4: Create goals engine and UI** — `checkGoalMet()`, `computeStreak()`, `computeOptimalBedtime()` functions. GoalsView with StreakCalendar and GoalSettings. Goals read/write from Supabase `sleep_goals` table via `useSupabaseGoals` hook.
+
+**Step 5: Add navigation sections to App.tsx**
+
+Add nav items: readiness, reports, goals alongside existing dashboard, detail, trends.
+
+**Step 6: Verify visually**
+
+Run: `cd sleep-viz && npm run dev`
+Expected: All sections render, data flows from Supabase
+
+**Step 7: Commit**
+
+```bash
+git add sleep-viz/src/
+git commit -m "feat: add readiness, coaching, reports, goals UI (PWA)"
+```
+
+---
+
+### Task 14: PWA — Update Constants and Scoring Display
+
+**Files:**
+- Modify: `sleep-viz/src/lib/constants.ts`
+
+**Step 1: Update score brackets and thresholds**
+
+```typescript
+export const SCORE_THRESHOLDS = {
+  optimal: { min: 85, color: '#22c55e', label: 'Optimal' },
+  good: { min: 70, color: '#3b82f6', label: 'Good' },
+  fair: { min: 55, color: '#eab308', label: 'Fair' },
+  needsImprovement: { min: 0, color: '#ef4444', label: 'Needs Improvement' },
+};
+
+export const READINESS_COLORS = { ring: '#f59e0b' };
+
+export const SCORE_WEIGHT_LABELS = [
+  { key: 'duration', label: 'Duration', weight: '30%' },
+  { key: 'efficiency', label: 'Efficiency', weight: '15%' },
+  { key: 'deepSleep', label: 'Deep Sleep', weight: '12%' },
+  { key: 'rem', label: 'REM Sleep', weight: '10%' },
+  { key: 'latency', label: 'Latency', weight: '8%' },
+  { key: 'waso', label: 'WASO', weight: '8%' },
+  { key: 'timing', label: 'Timing', weight: '8%' },
+  { key: 'restoration', label: 'Restoration', weight: '9%' },
+];
+```
+
+**Step 2: Update `getScoreInfo` function** to use new brackets (Optimal/Good/Fair/Needs Improvement).
+
+**Step 3: Commit**
+
+```bash
+git add sleep-viz/src/lib/constants.ts
+git commit -m "feat: update score brackets and weight labels (PWA)"
+```
+
+---
+
+## Phase 5: Testing and Verification
+
+### Task 15: PWA — Tests
+
+**Files:**
+- Create: `sleep-viz/src/test/coachingTips.test.ts`
+- Create: `sleep-viz/src/test/reports.test.ts`
+- Create: `sleep-viz/src/test/goals.test.ts`
+- Modify: `sleep-viz/src/test/sleepScore.test.ts` (update thresholds)
+
+**Step 1: Update sleepScore tests** — Adjust expected values for new brackets (85+ = Optimal, etc.). Remove tests that reference old Dexie-specific code.
+
+**Step 2: Add coaching tips tests** — Test each rule fires correctly with updated thresholds.
+
+**Step 3: Add reports tests** — Test weekly/monthly report generation, averages, best/worst night, trend direction.
+
+**Step 4: Add goals tests** — Test checkGoalMet, computeStreak, computeOptimalBedtime.
+
+**Step 5: Run all tests**
+
+Run: `cd sleep-viz && npx vitest run`
+Expected: All PASS
+
+**Step 6: Commit**
+
+```bash
+git add sleep-viz/src/test/
+git commit -m "test: update and add tests for new features (PWA)"
+```
+
+---
+
+### Task 16: Build Verification
+
+**Step 1: PWA type check**
+
+Run: `cd sleep-viz && npx tsc --noEmit`
+Expected: No errors
+
+**Step 2: PWA lint**
 
 Run: `cd sleep-viz && npm run lint`
 Expected: Clean
 
-**Step 4: Build for production**
+**Step 3: PWA build**
 
 Run: `cd sleep-viz && npm run build`
-Expected: Successful build with no errors
+Expected: Successful production build
 
-**Step 5: Commit any fixes if needed**
+**Step 4: iOS build**
 
----
+Run: Xcode Cmd+B
+Expected: Build succeeds
 
-### Task 19: Final Integration Commit
+**Step 5: iOS tests**
 
-**Step 1: Verify all changes**
+Run: Xcode Cmd+U
+Expected: All tests pass
 
-Run: `git status`
-
-**Step 2: Create final commit if there are loose changes**
+**Step 6: Final commit if needed**
 
 ```bash
-git add -A
-git commit -m "chore: final polish and integration fixes"
+git add -A && git commit -m "chore: fix any build/lint issues from integration"
 ```
