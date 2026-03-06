@@ -30,7 +30,9 @@ enum GoalsEngine {
         let cal = Calendar.current
         let h = cal.component(.hour, from: session.startDate)
         let m = cal.component(.minute, from: session.startDate)
-        let bedtimeMin = h * 60 + m
+        let raw = h * 60 + m
+        // Normalize: hours before noon (e.g. 00:30 = 30) get +1440 for evening comparison
+        let bedtimeMin = h < 12 ? raw + 1440 : raw
         return bedtimeMin >= startMin && bedtimeMin <= endMin
     }
 

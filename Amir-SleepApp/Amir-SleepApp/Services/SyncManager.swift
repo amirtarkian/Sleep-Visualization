@@ -14,6 +14,10 @@ final class SyncManager {
 
     private let healthKit = HealthKitService.shared
 
+    init() {
+        lastSyncDate = UserDefaults.standard.object(forKey: "lastSyncDate") as? Date
+    }
+
     func sync(modelContext: ModelContext) async {
         guard !isSyncing else { return }
         isSyncing = true

@@ -78,11 +78,14 @@ ALTER TABLE readiness_records ENABLE ROW LEVEL SECURITY;
 ALTER TABLE sleep_goals ENABLE ROW LEVEL SECURITY;
 
 CREATE POLICY "Users manage own sessions" ON sleep_sessions
-  FOR ALL USING (auth.uid() = user_id);
+  FOR ALL USING (auth.uid() = user_id)
+  WITH CHECK (auth.uid() = user_id);
 CREATE POLICY "Users manage own readiness" ON readiness_records
-  FOR ALL USING (auth.uid() = user_id);
+  FOR ALL USING (auth.uid() = user_id)
+  WITH CHECK (auth.uid() = user_id);
 CREATE POLICY "Users manage own goals" ON sleep_goals
-  FOR ALL USING (auth.uid() = user_id);
+  FOR ALL USING (auth.uid() = user_id)
+  WITH CHECK (auth.uid() = user_id);
 
 -- Enable realtime for PWA subscriptions
 ALTER PUBLICATION supabase_realtime ADD TABLE sleep_sessions;

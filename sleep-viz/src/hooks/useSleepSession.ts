@@ -77,24 +77,8 @@ export function useSleepSession(nightDate: string | null): {
 
       setSession(mapped)
 
-      // Fetch biometrics for this session
-      const { data: bioRows } = await supabase
-        .from('biometric_records')
-        .select('*')
-        .eq('session_id', row.id)
-
-      if (bioRows) {
-        setBiometrics(bioRows.map((b: any) => ({
-          id: b.id,
-          sessionId: b.session_id,
-          type: b.type,
-          value: b.value,
-          date: new Date(b.date),
-          sourceName: b.source_name ?? 'Apple Watch',
-        })))
-      } else {
-        setBiometrics([])
-      }
+      // Biometrics are stored inline on the session row, not in a separate table
+      setBiometrics([])
 
       setLoading(false)
     }

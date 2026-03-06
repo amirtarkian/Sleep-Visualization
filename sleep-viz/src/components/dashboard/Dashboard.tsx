@@ -12,13 +12,13 @@ import type { SleepSession, DateRange } from '../../providers/types'
 function getGreeting(): { title: string; subtitle: string } {
   const hour = new Date().getHours()
   if (hour >= 5 && hour < 12) {
-    return { title: 'Good morning, Amir', subtitle: 'Here\'s how you slept last night' }
+    return { title: 'Good morning', subtitle: 'Here\'s how you slept last night' }
   } else if (hour >= 12 && hour < 17) {
-    return { title: 'Good afternoon, Amir', subtitle: 'Your sleep at a glance' }
+    return { title: 'Good afternoon', subtitle: 'Your sleep at a glance' }
   } else if (hour >= 17 && hour < 21) {
-    return { title: 'Good evening, Amir', subtitle: 'Wind down and review your sleep' }
+    return { title: 'Good evening', subtitle: 'Wind down and review your sleep' }
   } else {
-    return { title: 'Good night, Amir', subtitle: 'Time to rest — here\'s your sleep summary' }
+    return { title: 'Good night', subtitle: 'Time to rest — here\'s your sleep summary' }
   }
 }
 
