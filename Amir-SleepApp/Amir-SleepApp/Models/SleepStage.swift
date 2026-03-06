@@ -26,6 +26,8 @@ struct SleepScoreData: Codable {
     let rem: Int
     let latency: Int
     let waso: Int
+    let timing: Int
+    let restoration: Int
     let isFallback: Bool
 }
 

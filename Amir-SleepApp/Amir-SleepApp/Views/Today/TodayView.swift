@@ -47,6 +47,7 @@ struct TodayView: View {
                         lastNightCard(session)
                         SubScoreBars(score: session.score)
                         insightCard(session)
+                        CoachingTipsCard(tips: CoachingEngine.generateTips(sessions: sessions.reversed()))
                     }
                     .padding()
                 } else {

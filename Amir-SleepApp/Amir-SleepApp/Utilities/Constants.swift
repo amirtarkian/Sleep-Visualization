@@ -16,29 +16,32 @@ struct ScoreInfo {
 
 func getScoreInfo(_ score: Int) -> ScoreInfo {
     switch score {
-    case 90...100: return ScoreInfo(label: "Excellent", color: Color(hex: "#22c55e"))
-    case 75..<90:  return ScoreInfo(label: "Good", color: Color(hex: "#3b82f6"))
-    case 60..<75:  return ScoreInfo(label: "Fair", color: Color(hex: "#eab308"))
-    case 40..<60:  return ScoreInfo(label: "Poor", color: Color(hex: "#f97316"))
-    default:       return ScoreInfo(label: "Very Poor", color: Color(hex: "#ef4444"))
+    case 85...100: return ScoreInfo(label: "Optimal", color: Color(hex: "#22c55e"))
+    case 70...84:  return ScoreInfo(label: "Good", color: Color(hex: "#3b82f6"))
+    case 55...69:  return ScoreInfo(label: "Fair", color: Color(hex: "#eab308"))
+    default:       return ScoreInfo(label: "Needs Improvement", color: Color(hex: "#ef4444"))
     }
 }
 
 // MARK: - Score Weights
 enum ScoreWeights {
-    static let duration = 0.25
-    static let efficiency = 0.20
-    static let deepSleep = 0.20
-    static let rem = 0.15
-    static let latency = 0.10
-    static let waso = 0.10
+    static let duration = 0.30
+    static let efficiency = 0.15
+    static let deepSleep = 0.12
+    static let rem = 0.10
+    static let latency = 0.08
+    static let waso = 0.08
+    static let timing = 0.08
+    static let restoration = 0.09
 }
 
 enum ScoreWeightsFallback {
-    static let duration = 0.35
-    static let efficiency = 0.30
-    static let latency = 0.15
-    static let waso = 0.20
+    static let duration = 0.40
+    static let efficiency = 0.25
+    static let latency = 0.10
+    static let waso = 0.10
+    static let timing = 0.08
+    static let restoration = 0.07
 }
 
 // MARK: - Thresholds

@@ -1,4 +1,4 @@
-import { useAllSessions } from '../../hooks/useSleepData'
+import { useSupabaseSessions } from '../../hooks/useSupabaseSessions'
 import { useSleepSession } from '../../hooks/useSleepSession'
 import { Section } from '../layout/Section'
 import { Card } from '../layout/Card'
@@ -14,12 +14,11 @@ import { BiometricsPanel } from './BiometricsPanel'
 
 interface NightDetailProps {
   nightDate: string | null
-  onSelectNight: (nightDate: string) => void
-  onNavigateImport: () => void
+  onSelectNight: (nightDate: string | null) => void
 }
 
-export function NightDetail({ nightDate, onSelectNight, onNavigateImport }: NightDetailProps) {
-  const allSessions = useAllSessions()
+export function NightDetail({ nightDate, onSelectNight }: NightDetailProps) {
+  const { sessions: allSessions } = useSupabaseSessions('all')
   const allDates = allSessions.map(s => s.nightDate)
   const effectiveDate = nightDate ?? allDates[allDates.length - 1] ?? null
   const { session, biometrics, loading } = useSleepSession(effectiveDate)
@@ -28,8 +27,7 @@ export function NightDetail({ nightDate, onSelectNight, onNavigateImport }: Nigh
     return (
       <EmptyState
         title="No sleep data"
-        description="Import data to view night details."
-        action={{ label: 'Import Data', onClick: onNavigateImport }}
+        description="Sleep data will appear here once synced from your Apple Watch via the iOS app."
       />
     )
   }

@@ -18,6 +18,12 @@ struct MainTabView: View {
             Tab("Trends", systemImage: "chart.line.uptrend.xyaxis") {
                 TrendsView()
             }
+            Tab("Reports", systemImage: "chart.bar.doc.horizontal") {
+                ReportsView()
+            }
+            Tab("Goals", systemImage: "target") {
+                GoalsView()
+            }
             Tab("Settings", systemImage: "gearshape.fill") {
                 SettingsView()
             }

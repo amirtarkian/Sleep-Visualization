@@ -6,35 +6,50 @@ export const STAGE_COLORS = {
 } as const
 
 export const SCORE_THRESHOLDS = {
-  excellent: { min: 90, color: '#22c55e', label: 'Excellent' },
-  good: { min: 75, color: '#3b82f6', label: 'Good' },
-  fair: { min: 60, color: '#eab308', label: 'Fair' },
-  poor: { min: 40, color: '#f97316', label: 'Poor' },
-  veryPoor: { min: 0, color: '#ef4444', label: 'Very Poor' },
+  optimal: { min: 85, color: '#22c55e', label: 'Optimal' },
+  good: { min: 70, color: '#3b82f6', label: 'Good' },
+  fair: { min: 55, color: '#eab308', label: 'Fair' },
+  needsImprovement: { min: 0, color: '#ef4444', label: 'Needs Improvement' },
 } as const
 
 export function getScoreInfo(score: number) {
-  if (score >= 90) return SCORE_THRESHOLDS.excellent
-  if (score >= 75) return SCORE_THRESHOLDS.good
-  if (score >= 60) return SCORE_THRESHOLDS.fair
-  if (score >= 40) return SCORE_THRESHOLDS.poor
-  return SCORE_THRESHOLDS.veryPoor
+  if (score >= 85) return SCORE_THRESHOLDS.optimal
+  if (score >= 70) return SCORE_THRESHOLDS.good
+  if (score >= 55) return SCORE_THRESHOLDS.fair
+  return SCORE_THRESHOLDS.needsImprovement
 }
 
+export const READINESS_COLORS = { ring: '#f59e0b' } as const
+
+export const SCORE_WEIGHT_LABELS = [
+  { key: 'duration', label: 'Duration', weight: '30%' },
+  { key: 'efficiency', label: 'Efficiency', weight: '15%' },
+  { key: 'deepSleep', label: 'Deep Sleep', weight: '12%' },
+  { key: 'rem', label: 'REM Sleep', weight: '10%' },
+  { key: 'latency', label: 'Latency', weight: '8%' },
+  { key: 'waso', label: 'WASO', weight: '8%' },
+  { key: 'timing', label: 'Timing', weight: '8%' },
+  { key: 'restoration', label: 'Restoration', weight: '9%' },
+] as const
+
 export const SCORE_WEIGHTS = {
-  duration: 0.25,
-  efficiency: 0.20,
-  deepSleep: 0.20,
-  rem: 0.15,
-  latency: 0.10,
-  waso: 0.10,
+  duration: 0.30,
+  efficiency: 0.15,
+  deepSleep: 0.12,
+  rem: 0.10,
+  latency: 0.08,
+  waso: 0.08,
+  timing: 0.08,
+  restoration: 0.09,
 } as const
 
 export const SCORE_WEIGHTS_FALLBACK = {
-  duration: 0.35,
-  efficiency: 0.30,
-  latency: 0.15,
-  waso: 0.20,
+  duration: 0.40,
+  efficiency: 0.25,
+  latency: 0.10,
+  waso: 0.10,
+  timing: 0.08,
+  restoration: 0.07,
 } as const
 
 export const STAGE_ORDER = ['awake', 'rem', 'core', 'deep'] as const

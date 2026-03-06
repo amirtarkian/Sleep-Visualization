@@ -5,12 +5,24 @@ import BackgroundTasks
 @main
 struct Amir_SleepAppApp: App {
     @State private var syncManager = SyncManager()
+    @State private var supabaseService = SupabaseService()
 
     var body: some Scene {
         WindowGroup {
-            MainTabView()
-                .environment(syncManager)
-                .preferredColorScheme(.dark)
+            Group {
+                if supabaseService.isAuthenticated {
+                    MainTabView()
+                } else {
+                    SignInView()
+                }
+            }
+            .environment(syncManager)
+            .environment(supabaseService)
+            .preferredColorScheme(.dark)
+            .task {
+                syncManager.supabaseService = supabaseService
+                await supabaseService.checkSession()
+            }
         }
         .modelContainer(for: [SleepSession.self, ReadinessRecord.self])
     }

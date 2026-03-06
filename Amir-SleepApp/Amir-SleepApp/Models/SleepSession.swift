@@ -45,7 +45,7 @@ final class SleepSession {
     var score: SleepScoreData {
         (try? JSONDecoder().decode(SleepScoreData.self, from: scoreData)) ?? SleepScoreData(
             overall: 0, duration: 0, efficiency: 0, deepSleep: 0,
-            rem: 0, latency: 0, waso: 0, isFallback: true
+            rem: 0, latency: 0, waso: 0, timing: 0, restoration: 0, isFallback: true
         )
     }
 

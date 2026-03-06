@@ -25,6 +25,8 @@ export interface SleepScore {
   rem: number
   latency: number
   waso: number
+  timing: number
+  restoration: number
   isFallback: boolean // true when no stage data available
 }
 
@@ -58,13 +60,6 @@ export interface SleepSession {
   avgRespiratoryRate: number | null
 }
 
-export interface SleepDataProvider {
-  name: string
-  import(file?: File): Promise<void>
-  hasData(): Promise<boolean>
-  clearData(): Promise<void>
-}
-
 export interface NightStats {
   nightDate: string
   session: SleepSession
@@ -88,11 +83,3 @@ export interface TrendData {
 }
 
 export type DateRange = '7d' | '30d' | '90d' | 'all'
-
-export interface ImportState {
-  status: 'idle' | 'reading' | 'parsing' | 'processing' | 'saving' | 'done' | 'error'
-  progress: number // 0-100
-  recordCount: number
-  sessionCount: number
-  error?: string
-}

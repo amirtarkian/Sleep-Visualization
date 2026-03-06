@@ -1,10 +1,7 @@
-import { useSleepData } from '../../hooks/useSleepData'
 import { useTrends } from '../../hooks/useTrends'
-import { useDateRange } from '../../hooks/useDateRange'
 import { Section } from '../layout/Section'
 import { Card } from '../layout/Card'
 import { EmptyState } from '../shared/EmptyState'
-import { DateRangeSelector } from '../dashboard/DateRangeSelector'
 import { ScoreTrendChart } from './ScoreTrendChart'
 import { DurationBarChart } from './DurationBarChart'
 import { BedtimeScatter } from './BedtimeScatter'
@@ -12,22 +9,20 @@ import { StageStackedArea } from './StageStackedArea'
 import { EfficiencyTrendLine } from './EfficiencyTrendLine'
 import { HeartRateTrend } from './HeartRateTrend'
 import { bedtimeMinutes, dateToMinutesFromMidnight } from '../../lib/dateUtils'
+import type { SleepSession } from '../../providers/types'
 
 interface TrendsViewProps {
-  onNavigateImport: () => void
+  sessions: SleepSession[]
 }
 
-export function TrendsView({ onNavigateImport }: TrendsViewProps) {
-  const { dateRange, setDateRange } = useDateRange('30d')
-  const sessions = useSleepData(dateRange)
+export function TrendsView({ sessions }: TrendsViewProps) {
   const trends = useTrends(sessions)
 
   if (sessions.length === 0) {
     return (
       <EmptyState
         title="No trend data"
-        description="Import data to see trends over time."
-        action={{ label: 'Import Data', onClick: onNavigateImport }}
+        description="Sleep data will appear here once synced from your Apple Watch via the iOS app."
       />
     )
   }
@@ -52,7 +47,6 @@ export function TrendsView({ onNavigateImport }: TrendsViewProps) {
     <div className="space-y-6">
       <Section title="Trends" subtitle="Your sleep patterns over time">
         <div className="flex items-center justify-between mb-4">
-          <DateRangeSelector value={dateRange} onChange={setDateRange} />
           <div className="flex items-center gap-3 text-xs text-slate-500">
             <span>Trend: <span className={
               trends.trendDirection === 'improving' ? 'text-green-400' :

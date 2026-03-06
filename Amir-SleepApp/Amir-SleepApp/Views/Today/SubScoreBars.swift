@@ -24,6 +24,8 @@ struct SubScoreBars: View {
         items.append(contentsOf: [
             SubScore(name: "Latency", value: score.latency, icon: "hourglass"),
             SubScore(name: "WASO", value: score.waso, icon: "eye"),
+            SubScore(name: "Timing", value: score.timing, icon: "moon.stars"),
+            SubScore(name: "Restoration", value: score.restoration, icon: "heart.circle"),
         ])
         return items
     }

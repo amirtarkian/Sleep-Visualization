@@ -1,6 +1,4 @@
-import { useSleepData } from '../../hooks/useSleepData'
 import { useTrends } from '../../hooks/useTrends'
-import { useDateRange } from '../../hooks/useDateRange'
 import { Section } from '../layout/Section'
 import { EmptyState } from '../shared/EmptyState'
 import { ScoreRing } from './ScoreRing'
@@ -9,37 +7,42 @@ import { QuickStats } from './QuickStats'
 import { DateRangeSelector } from './DateRangeSelector'
 import { Card } from '../layout/Card'
 import { getScoreInfo } from '../../lib/constants'
+import type { SleepSession, DateRange } from '../../providers/types'
 
 function getGreeting(): { title: string; subtitle: string } {
   const hour = new Date().getHours()
   if (hour >= 5 && hour < 12) {
-    return { title: 'Good morning, Amir', subtitle: 'Here\'s how you slept last night' }
+    return { title: 'Good morning', subtitle: 'Here\'s how you slept last night' }
   } else if (hour >= 12 && hour < 17) {
-    return { title: 'Good afternoon, Amir', subtitle: 'Your sleep at a glance' }
+    return { title: 'Good afternoon', subtitle: 'Your sleep at a glance' }
   } else if (hour >= 17 && hour < 21) {
-    return { title: 'Good evening, Amir', subtitle: 'Wind down and review your sleep' }
+    return { title: 'Good evening', subtitle: 'Wind down and review your sleep' }
   } else {
-    return { title: 'Good night, Amir', subtitle: 'Time to rest — here\'s your sleep summary' }
+    return { title: 'Good night', subtitle: 'Time to rest — here\'s your sleep summary' }
   }
 }
 
 interface DashboardProps {
-  onNavigateImport: () => void
+  sessions: SleepSession[]
+  loading: boolean
+  dateRange: DateRange
+  onDateRangeChange: (range: DateRange) => void
   onSelectNight: (nightDate: string) => void
 }
 
-export function Dashboard({ onNavigateImport, onSelectNight }: DashboardProps) {
-  const { dateRange, setDateRange } = useDateRange('30d')
-  const sessions = useSleepData(dateRange)
+export function Dashboard({ sessions, loading, dateRange, onDateRangeChange, onSelectNight }: DashboardProps) {
   const trends = useTrends(sessions)
   const greeting = getGreeting()
+
+  if (loading) {
+    return <div className="flex items-center justify-center h-64"><p className="text-slate-500">Loading...</p></div>
+  }
 
   if (sessions.length === 0) {
     return (
       <EmptyState
         title="No sleep data yet"
-        description="Import your Apple Health export or load sample data to get started."
-        action={{ label: 'Import Data', onClick: onNavigateImport }}
+        description="Sleep data will appear here once synced from your Apple Watch via the iOS app."
       />
     )
   }
@@ -54,7 +57,7 @@ export function Dashboard({ onNavigateImport, onSelectNight }: DashboardProps) {
     <div className="space-y-6">
       <Section title={greeting.title} subtitle={greeting.subtitle}>
         <div className="flex items-center justify-between mb-4">
-          <DateRangeSelector value={dateRange} onChange={setDateRange} />
+          <DateRangeSelector value={dateRange} onChange={onDateRangeChange} />
           <span className="text-xs text-slate-500">{sessions.length} nights</span>
         </div>
 

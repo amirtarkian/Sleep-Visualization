@@ -9,7 +9,14 @@ final class SyncManager {
     var lastSyncDate: Date?
     var syncError: String?
 
+    /// Set by the app entry point so synced data is pushed to Supabase.
+    var supabaseService: SupabaseService?
+
     private let healthKit = HealthKitService.shared
+
+    init() {
+        lastSyncDate = UserDefaults.standard.object(forKey: "lastSyncDate") as? Date
+    }
 
     func sync(modelContext: ModelContext) async {
         guard !isSyncing else { return }
@@ -49,6 +56,22 @@ final class SyncManager {
 
                 let stats = SessionBuilder.computeStats(startDate: sessionStart, endDate: sessionEnd, stages: stages)
 
+                let biometrics = await fetchBiometrics(from: sessionStart, to: sessionEnd)
+
+                // Compute sleep midpoint as minutes from midnight
+                let midpoint = sessionStart.addingTimeInterval(sessionEnd.timeIntervalSince(sessionStart) / 2)
+                let midpointComponents = Calendar.current.dateComponents([.hour, .minute], from: midpoint)
+                let midpointHour = midpointComponents.hour ?? 0
+                let midpointMinute = midpointComponents.minute ?? 0
+                let rawMinutes = Double(midpointHour * 60 + midpointMinute)
+                // Normalize: hours after midnight are 0+, hours before midnight (e.g. 11PM = 23:00) become negative
+                let midpointMinutesFromMidnight = rawMinutes <= 720 ? rawMinutes : rawMinutes - 1440
+
+                // Fetch resting HR for restoration sub-score
+                let restingHRStart = Calendar.current.date(byAdding: .day, value: -7, to: sessionStart)!
+                let restingHRSamples = (try? await healthKit.fetchRestingHeartRate(from: restingHRStart, to: sessionEnd)) ?? []
+                let restingHR = restingHRSamples.isEmpty ? 0 : restingHRSamples.map(\.value).reduce(0, +) / Double(restingHRSamples.count)
+
                 let score = SleepScoringEngine.computeSleepScore(
                     totalSleepTime: stats.totalSleepTime,
                     sleepEfficiency: stats.sleepEfficiency,
@@ -56,10 +79,11 @@ final class SyncManager {
                     remPercent: stats.remPercent,
                     sleepLatency: stats.sleepLatency,
                     waso: stats.waso,
-                    hasStages: !stages.isEmpty
+                    hasStages: !stages.isEmpty,
+                    midpointMinutesFromMidnight: midpointMinutesFromMidnight,
+                    sleepingHR: biometrics.avgHeartRate ?? 0,
+                    restingHR: restingHR
                 )
-
-                let biometrics = await fetchBiometrics(from: sessionStart, to: sessionEnd)
 
                 let session = SleepSession(
                     nightDate: nightDate,
@@ -72,6 +96,46 @@ final class SyncManager {
                     isFallback: stages.isEmpty
                 )
                 modelContext.insert(session)
+
+                // Push to Supabase
+                if let supabase = supabaseService {
+                    let payload: [String: Any] = [
+                        "night_date": nightDate,
+                        "start_date": ISO8601DateFormatter().string(from: sessionStart),
+                        "end_date": ISO8601DateFormatter().string(from: sessionEnd),
+                        "time_in_bed": stats.timeInBed,
+                        "total_sleep_time": stats.totalSleepTime,
+                        "sleep_efficiency": stats.sleepEfficiency,
+                        "sleep_latency": stats.sleepLatency,
+                        "waso": stats.waso,
+                        "deep_minutes": stats.deepMinutes,
+                        "rem_minutes": stats.remMinutes,
+                        "core_minutes": stats.coreMinutes,
+                        "awake_minutes": stats.awakeMinutes,
+                        "deep_percent": stats.deepPercent,
+                        "rem_percent": stats.remPercent,
+                        "core_percent": stats.corePercent,
+                        "awake_percent": stats.awakePercent,
+                        "score_overall": score.overall,
+                        "score_duration": score.duration,
+                        "score_efficiency": score.efficiency,
+                        "score_deep": score.deepSleep,
+                        "score_rem": score.rem,
+                        "score_latency": score.latency,
+                        "score_waso": score.waso,
+                        "score_timing": score.timing,
+                        "score_restoration": score.restoration,
+                        "is_fallback": stages.isEmpty,
+                        "avg_heart_rate": biometrics.avgHeartRate as Any,
+                        "min_heart_rate": biometrics.minHeartRate as Any,
+                        "avg_hrv": biometrics.avgHrv as Any,
+                        "avg_spo2": biometrics.avgSpo2 as Any,
+                        "avg_respiratory_rate": biometrics.avgRespiratoryRate as Any,
+                        "resting_heart_rate": restingHR,
+                        "source_name": "Apple Watch",
+                    ]
+                    try? await supabase.pushSleepSession(payload)
+                }
             }
 
             try await computeReadinessScores(modelContext: modelContext)
@@ -160,5 +224,19 @@ final class SyncManager {
             sleepScoreContribution: sleepScore
         )
         modelContext.insert(record)
+
+        // Push readiness record to Supabase
+        if let supabase = supabaseService {
+            let payload: [String: Any] = [
+                "date": nightDate,
+                "score": readinessScore,
+                "hrv_baseline": hrvBaseline,
+                "hrv_current": hrvCurrent,
+                "resting_hr_baseline": restingHRBaseline,
+                "resting_hr_current": restingHRCurrent,
+                "sleep_score_contribution": sleepScore,
+            ]
+            try? await supabase.pushReadinessRecord(payload)
+        }
     }
 }
