@@ -6,6 +6,10 @@ import { computeSleepScore } from './sleepScore'
 import { computeBiometricSummary, filterBiometricsForSession } from './biometrics'
 import { deduplicateIntervals } from './deduplication'
 
+// NOTE: This file is dead code — not imported by any app component.
+// Sessions are now fetched from Supabase, not grouped from XML imports.
+// Kept for reference and test compatibility.
+
 interface RawSleepRecord {
   type: string // HKCategoryValueSleepAnalysis...
   startDate: Date
