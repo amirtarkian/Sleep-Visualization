@@ -6,6 +6,22 @@ import BackgroundTasks
 struct Amir_SleepAppApp: App {
     @State private var syncManager = SyncManager()
     @State private var supabaseService = SupabaseService()
+    let modelContainer: ModelContainer
+
+    init() {
+        do {
+            modelContainer = try ModelContainer(for: SleepSession.self, ReadinessRecord.self)
+        } catch {
+            fatalError("Failed to create ModelContainer: \(error)")
+        }
+
+        BGTaskScheduler.shared.register(
+            forTaskWithIdentifier: "com.sleepviz.sync",
+            using: nil
+        ) { task in
+            self.handleBackgroundSync(task: task as! BGAppRefreshTask)
+        }
+    }
 
     var body: some Scene {
         WindowGroup {
@@ -24,23 +40,16 @@ struct Amir_SleepAppApp: App {
                 await supabaseService.checkSession()
             }
         }
-        .modelContainer(for: [SleepSession.self, ReadinessRecord.self])
-    }
-
-    init() {
-        BGTaskScheduler.shared.register(
-            forTaskWithIdentifier: "com.sleepviz.sync",
-            using: nil
-        ) { task in
-            self.handleBackgroundSync(task: task as! BGAppRefreshTask)
-        }
+        .modelContainer(modelContainer)
     }
 
     private func handleBackgroundSync(task: BGAppRefreshTask) {
         task.expirationHandler = { task.setTaskCompleted(success: false) }
         Amir_SleepAppApp.scheduleNextBackgroundSync()
-        Task {
-            task.setTaskCompleted(success: true)
+        Task { @MainActor in
+            let context = ModelContext(modelContainer)
+            await syncManager.sync(modelContext: context)
+            task.setTaskCompleted(success: syncManager.syncError == nil)
         }
     }
 
