@@ -38,12 +38,14 @@ struct SignInView: View {
                 .cornerRadius(12)
                 .padding(.horizontal, 40)
 
+                #if DEBUG
                 // Skip auth button for development
                 Button("Continue without sign in") {
                     supabase.isAuthenticated = true
                 }
                 .font(.caption)
                 .foregroundColor(.white.opacity(0.4))
+                #endif
 
                 if let error {
                     Text(error)
