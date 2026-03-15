@@ -35,6 +35,7 @@ final class SyncManager {
             }
 
             let groups = SessionBuilder.groupIntoSessions(samples: stageSamples)
+            let isoFormatter = ISO8601DateFormatter()
 
             for group in groups {
                 guard let first = group.first else { continue }
@@ -101,8 +102,8 @@ final class SyncManager {
                 if let supabase = supabaseService {
                     let payload: [String: Any] = [
                         "night_date": nightDate,
-                        "start_date": ISO8601DateFormatter().string(from: sessionStart),
-                        "end_date": ISO8601DateFormatter().string(from: sessionEnd),
+                        "start_date": isoFormatter.string(from: sessionStart),
+                        "end_date": isoFormatter.string(from: sessionEnd),
                         "time_in_bed": stats.timeInBed,
                         "total_sleep_time": stats.totalSleepTime,
                         "sleep_efficiency": stats.sleepEfficiency,

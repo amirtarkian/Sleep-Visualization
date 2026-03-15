@@ -43,7 +43,7 @@ export function useSupabaseSessions(dateRange: '7d' | '30d' | '90d' | 'all') {
   return { sessions, loading };
 }
 
-function mapRowToSession(row: any): SleepSession {
+export function mapRowToSession(row: any): SleepSession {
   return {
     id: row.id,
     nightDate: row.night_date,

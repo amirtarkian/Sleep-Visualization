@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useState, useMemo } from 'react'
 import { Flame, Target, Clock, Settings, Sparkles } from 'lucide-react'
 import { Section } from '../layout/Section'
 import { Card } from '../layout/Card'
@@ -33,17 +33,17 @@ export function GoalsView({ sessions }: GoalsViewProps) {
     )
   }
 
-  const durationStreak = computeStreak(sessions, s =>
+  const durationStreak = useMemo(() => computeStreak(sessions, s =>
     checkDurationGoalMet(s, goals.durationTargetMin)
-  )
-  const scoreStreak = computeStreak(sessions, s =>
+  ), [sessions, goals.durationTargetMin])
+  const scoreStreak = useMemo(() => computeStreak(sessions, s =>
     checkScoreGoalMet(s, goals.scoreTarget)
-  )
-  const bedtimeStreak = computeStreak(sessions, s =>
+  ), [sessions, goals.scoreTarget])
+  const bedtimeStreak = useMemo(() => computeStreak(sessions, s =>
     checkBedtimeGoalMet(s, goals.bedtimeStartMin, goals.bedtimeEndMin)
-  )
+  ), [sessions, goals.bedtimeStartMin, goals.bedtimeEndMin])
 
-  const optimalBedtime = computeOptimalBedtime(sessions)
+  const optimalBedtime = useMemo(() => computeOptimalBedtime(sessions), [sessions])
 
   const streakCards = [
     {
@@ -146,7 +146,5 @@ export function GoalsView({ sessions }: GoalsViewProps) {
 }
 
 function formatTime(hour: number, minute: number): string {
-  const period = hour >= 12 ? 'PM' : 'AM'
-  const displayHour = hour === 0 ? 12 : hour > 12 ? hour - 12 : hour
-  return `${displayHour}:${minute.toString().padStart(2, '0')} ${period}`
+  return formatTimeFromMinutes(hour * 60 + minute)
 }
