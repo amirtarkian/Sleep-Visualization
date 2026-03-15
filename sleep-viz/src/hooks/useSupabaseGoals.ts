@@ -1,19 +1,7 @@
 import { useState, useEffect, useCallback } from 'react';
 import { supabase } from '../lib/supabase';
-
-export interface SleepGoalsConfig {
-  durationTargetMin: number;
-  scoreTarget: number;
-  bedtimeStartMin: number; // minutes from midnight (e.g. 1350 = 22:30)
-  bedtimeEndMin: number;   // minutes from midnight (e.g. 1380 = 23:00)
-}
-
-const DEFAULT_GOALS: SleepGoalsConfig = {
-  durationTargetMin: 480,
-  scoreTarget: 75,
-  bedtimeStartMin: 1350,
-  bedtimeEndMin: 1380,
-};
+import { DEFAULT_GOALS } from '../lib/goals';
+export type { SleepGoalsConfig } from '../lib/goals';
 
 export function useSupabaseGoals() {
   const [goals, setGoals] = useState<SleepGoalsConfig>(DEFAULT_GOALS);

@@ -133,8 +133,8 @@ enum ReportEngine {
         let firstAvg = Double(firstHalf.reduce(0) { $0 + $1.score.overall }) / Double(firstHalf.count)
         let secondAvg = Double(secondHalf.reduce(0) { $0 + $1.score.overall }) / Double(secondHalf.count)
         let diff = secondAvg - firstAvg
-        if diff > 3 { return .improving }
-        if diff < -3 { return .declining }
+        if diff > 5 { return .improving }
+        if diff < -5 { return .declining }
         return .stable
     }
 

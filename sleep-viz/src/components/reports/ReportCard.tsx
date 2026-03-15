@@ -1,6 +1,7 @@
 import { TrendingUp, TrendingDown, Minus, Star, AlertCircle, Lightbulb, BarChart3, CheckCircle } from 'lucide-react'
 import { Card } from '../layout/Card'
 import { getScoreInfo } from '../../lib/constants'
+import { formatDuration } from '../../lib/formatters'
 import type { SleepReport } from '../../lib/reports'
 
 const TREND_CONFIG = {
@@ -8,12 +9,6 @@ const TREND_CONFIG = {
   declining: { icon: TrendingDown, color: '#ef4444', label: 'Declining' },
   stable: { icon: Minus, color: '#64748b', label: 'Stable' },
 } as const
-
-function formatDuration(minutes: number): string {
-  const h = Math.floor(minutes / 60)
-  const m = Math.round(minutes % 60)
-  return `${h}h ${m}m`
-}
 
 interface ReportCardProps {
   report: SleepReport

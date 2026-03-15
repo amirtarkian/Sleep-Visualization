@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useState, useMemo } from 'react'
 import { Section } from '../layout/Section'
 import { EmptyState } from '../shared/EmptyState'
 import { ReportCard } from './ReportCard'
@@ -23,10 +23,12 @@ export function ReportsView({ sessions }: ReportsViewProps) {
     )
   }
 
-  const report =
-    period === 'weekly'
+  const report = useMemo(
+    () => period === 'weekly'
       ? generateWeeklyReport(sessions)
-      : generateMonthlyReport(sessions)
+      : generateMonthlyReport(sessions),
+    [sessions, period]
+  )
 
   return (
     <div className="space-y-6">

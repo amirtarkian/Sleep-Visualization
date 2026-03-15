@@ -1,3 +1,4 @@
+import { useMemo } from 'react'
 import { AlertTriangle, Info, CheckCircle } from 'lucide-react'
 import { Card } from '../layout/Card'
 import { Section } from '../layout/Section'
@@ -32,7 +33,7 @@ interface CoachingTipsProps {
 }
 
 export function CoachingTips({ sessions }: CoachingTipsProps) {
-  const tips = generateTips(sessions)
+  const tips = useMemo(() => generateTips(sessions), [sessions])
 
   if (tips.length === 0) return null
 
