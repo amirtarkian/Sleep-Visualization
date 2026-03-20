@@ -136,6 +136,16 @@ final class SyncManager {
                         "source_name": "Apple Watch",
                     ]
                     try? await supabase.pushSleepSession(payload)
+
+                    // Push biometric time-series samples
+                    let biometricPayloads = await buildBiometricSamplePayloads(
+                        nightDate: nightDate,
+                        from: sessionStart,
+                        to: sessionEnd
+                    )
+                    if !biometricPayloads.isEmpty {
+                        try? await supabase.pushBiometricSamples(biometricPayloads)
+                    }
                 }
             }
 
@@ -175,6 +185,57 @@ final class SyncManager {
         }
 
         return summary
+    }
+
+    private func buildBiometricSamplePayloads(
+        nightDate: String,
+        from start: Date,
+        to end: Date
+    ) async -> [[String: Any]] {
+        var payloads: [[String: Any]] = []
+        let isoFmt = ISO8601DateFormatter()
+
+        if let hrSamples = try? await healthKit.fetchHeartRate(from: start, to: end) {
+            for s in hrSamples {
+                payloads.append([
+                    "session_night_date": nightDate,
+                    "metric_type": "heart_rate",
+                    "timestamp": isoFmt.string(from: s.startDate),
+                    "value": s.value
+                ])
+            }
+        }
+        if let hrvSamples = try? await healthKit.fetchHRV(from: start, to: end) {
+            for s in hrvSamples {
+                payloads.append([
+                    "session_night_date": nightDate,
+                    "metric_type": "hrv",
+                    "timestamp": isoFmt.string(from: s.startDate),
+                    "value": s.value
+                ])
+            }
+        }
+        if let spo2Samples = try? await healthKit.fetchSpO2(from: start, to: end) {
+            for s in spo2Samples {
+                payloads.append([
+                    "session_night_date": nightDate,
+                    "metric_type": "spo2",
+                    "timestamp": isoFmt.string(from: s.startDate),
+                    "value": s.value * 100
+                ])
+            }
+        }
+        if let rrSamples = try? await healthKit.fetchRespiratoryRate(from: start, to: end) {
+            for s in rrSamples {
+                payloads.append([
+                    "session_night_date": nightDate,
+                    "metric_type": "respiratory_rate",
+                    "timestamp": isoFmt.string(from: s.startDate),
+                    "value": s.value
+                ])
+            }
+        }
+        return payloads
     }
 
     private func computeReadinessScores(modelContext: ModelContext) async throws {
