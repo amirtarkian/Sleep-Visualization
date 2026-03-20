@@ -5,7 +5,9 @@ CREATE TABLE biometric_samples (
   session_night_date TEXT NOT NULL,
   metric_type TEXT NOT NULL,
   timestamp TIMESTAMPTZ NOT NULL,
-  value DOUBLE PRECISION NOT NULL
+  value REAL NOT NULL,
+  synced_at TIMESTAMPTZ DEFAULT NOW(),
+  UNIQUE(user_id, session_night_date, metric_type, timestamp)
 );
 
 CREATE INDEX idx_biometric_samples_lookup
