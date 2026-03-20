@@ -36,10 +36,32 @@ export function useSleepSession(nightDate: string | null): {
         return
       }
 
-      setSession(mapRowToSession(row))
+      const mapped = mapRowToSession(row)
+      setSession(mapped)
 
-      // Biometrics are stored inline on the session row, not in a separate table
-      setBiometrics([])
+      // Fetch biometric time-series samples
+      const { data: samples } = await supabase
+        .from('biometric_samples')
+        .select('*')
+        .eq('session_night_date', nightDate)
+        .order('timestamp', { ascending: true })
+
+      const metricTypeMap: Record<string, BiometricRecord['type']> = {
+        heart_rate: 'heartRate',
+        hrv: 'hrv',
+        spo2: 'spo2',
+        respiratory_rate: 'respiratoryRate',
+      }
+
+      const records: BiometricRecord[] = (samples ?? []).map(s => ({
+        sessionId: mapped.id,
+        type: metricTypeMap[s.metric_type] ?? 'heartRate',
+        value: s.value,
+        date: new Date(s.timestamp),
+        sourceName: 'Apple Watch',
+      }))
+
+      setBiometrics(records)
 
       setLoading(false)
     }
