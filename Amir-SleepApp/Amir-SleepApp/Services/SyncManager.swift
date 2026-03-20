@@ -24,6 +24,7 @@ final class SyncManager {
         syncError = nil
 
         do {
+            var pushErrors: [String] = []
             let endDate = Date()
             let startDate = lastSyncDate ?? Calendar.current.date(byAdding: .day, value: -90, to: endDate)!
 
@@ -57,7 +58,7 @@ final class SyncManager {
 
                 let stats = SessionBuilder.computeStats(startDate: sessionStart, endDate: sessionEnd, stages: stages)
 
-                let biometrics = await fetchBiometrics(from: sessionStart, to: sessionEnd)
+                let (biometrics, rawBiometrics) = await fetchBiometrics(from: sessionStart, to: sessionEnd)
 
                 // Compute sleep midpoint as minutes from midnight
                 let midpoint = sessionStart.addingTimeInterval(sessionEnd.timeIntervalSince(sessionStart) / 2)
@@ -135,11 +136,32 @@ final class SyncManager {
                         "resting_heart_rate": restingHR,
                         "source_name": "Apple Watch",
                     ]
-                    try? await supabase.pushSleepSession(payload)
+                    do {
+                        try await supabase.pushSleepSession(payload)
+                    } catch {
+                        pushErrors.append("Session \(nightDate): \(error.localizedDescription)")
+                    }
+
+                    // Push biometric time-series samples
+                    let biometricPayloads = buildBiometricSamplePayloads(
+                        nightDate: nightDate,
+                        raw: rawBiometrics
+                    )
+                    if !biometricPayloads.isEmpty {
+                        do {
+                            try await supabase.pushBiometricSamples(biometricPayloads)
+                        } catch {
+                            pushErrors.append("Biometrics \(nightDate): \(error.localizedDescription)")
+                        }
+                    }
                 }
             }
 
             try await computeReadinessScores(modelContext: modelContext)
+
+            if !pushErrors.isEmpty {
+                syncError = "\(pushErrors.count) push(es) failed: \(pushErrors.first ?? "")"
+            }
 
             try modelContext.save()
             lastSyncDate = endDate
@@ -152,10 +174,19 @@ final class SyncManager {
         isSyncing = false
     }
 
-    private func fetchBiometrics(from start: Date, to end: Date) async -> BiometricSummary {
+    private struct RawBiometricSamples {
+        var hr: [(startDate: Date, value: Double)] = []
+        var hrv: [(startDate: Date, value: Double)] = []
+        var spo2: [(startDate: Date, value: Double)] = []
+        var rr: [(startDate: Date, value: Double)] = []
+    }
+
+    private func fetchBiometrics(from start: Date, to end: Date) async -> (BiometricSummary, RawBiometricSamples) {
         var summary = BiometricSummary()
+        var raw = RawBiometricSamples()
 
         if let hrSamples = try? await healthKit.fetchHeartRate(from: start, to: end), !hrSamples.isEmpty {
+            raw.hr = hrSamples.map { (startDate: $0.startDate, value: $0.value) }
             let values = hrSamples.map(\.value)
             summary.avgHeartRate = values.reduce(0, +) / Double(values.count)
             summary.minHeartRate = values.min()
@@ -163,18 +194,63 @@ final class SyncManager {
         }
 
         if let hrvSamples = try? await healthKit.fetchHRV(from: start, to: end), !hrvSamples.isEmpty {
+            raw.hrv = hrvSamples.map { (startDate: $0.startDate, value: $0.value) }
             summary.avgHrv = hrvSamples.map(\.value).reduce(0, +) / Double(hrvSamples.count)
         }
 
         if let spo2Samples = try? await healthKit.fetchSpO2(from: start, to: end), !spo2Samples.isEmpty {
+            raw.spo2 = spo2Samples.map { (startDate: $0.startDate, value: $0.value) }
             summary.avgSpo2 = spo2Samples.map(\.value).reduce(0, +) / Double(spo2Samples.count) * 100
         }
 
         if let rrSamples = try? await healthKit.fetchRespiratoryRate(from: start, to: end), !rrSamples.isEmpty {
+            raw.rr = rrSamples.map { (startDate: $0.startDate, value: $0.value) }
             summary.avgRespiratoryRate = rrSamples.map(\.value).reduce(0, +) / Double(rrSamples.count)
         }
 
-        return summary
+        return (summary, raw)
+    }
+
+    private func buildBiometricSamplePayloads(
+        nightDate: String,
+        raw: RawBiometricSamples
+    ) -> [[String: Any]] {
+        var payloads: [[String: Any]] = []
+        let isoFmt = ISO8601DateFormatter()
+
+        for s in raw.hr {
+            payloads.append([
+                "session_night_date": nightDate,
+                "metric_type": "heart_rate",
+                "timestamp": isoFmt.string(from: s.startDate),
+                "value": s.value
+            ])
+        }
+        for s in raw.hrv {
+            payloads.append([
+                "session_night_date": nightDate,
+                "metric_type": "hrv",
+                "timestamp": isoFmt.string(from: s.startDate),
+                "value": s.value
+            ])
+        }
+        for s in raw.spo2 {
+            payloads.append([
+                "session_night_date": nightDate,
+                "metric_type": "spo2",
+                "timestamp": isoFmt.string(from: s.startDate),
+                "value": s.value * 100
+            ])
+        }
+        for s in raw.rr {
+            payloads.append([
+                "session_night_date": nightDate,
+                "metric_type": "respiratory_rate",
+                "timestamp": isoFmt.string(from: s.startDate),
+                "value": s.value
+            ])
+        }
+        return payloads
     }
 
     private func computeReadinessScores(modelContext: ModelContext) async throws {
@@ -237,7 +313,11 @@ final class SyncManager {
                 "resting_hr_current": restingHRCurrent,
                 "sleep_score_contribution": sleepScore,
             ]
-            try? await supabase.pushReadinessRecord(payload)
+            do {
+                try await supabase.pushReadinessRecord(payload)
+            } catch {
+                syncError = (syncError ?? "") + "\nReadiness push failed: \(error.localizedDescription)"
+            }
         }
     }
 }

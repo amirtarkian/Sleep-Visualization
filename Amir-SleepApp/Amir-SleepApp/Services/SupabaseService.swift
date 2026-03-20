@@ -108,6 +108,25 @@ final class SupabaseService {
             .execute()
     }
 
+    /// Push biometric time-series samples for a sleep session.
+    func pushBiometricSamples(_ samples: [[String: Any]]) async throws {
+        guard syncEnabled, isAuthenticated, let client else { return }
+        let rows = samples.map { sample -> [String: Any] in
+            var data = sample
+            data["user_id"] = userId
+            return data
+        }
+        let jsonData = try JSONSerialization.data(withJSONObject: rows.map { dict in
+            dict.compactMapValues { value -> Any? in
+                if value is NSNull { return nil }
+                return value
+            }
+        })
+        try await client.from("biometric_samples")
+            .upsert(jsonData, onConflict: "user_id,session_night_date,metric_type,timestamp")
+            .execute()
+    }
+
     /// Push user goals to the `sleep_goals` table.
     func pushGoals(_ payload: [String: Any]) async throws {
         guard syncEnabled, isAuthenticated, let client else { return }
