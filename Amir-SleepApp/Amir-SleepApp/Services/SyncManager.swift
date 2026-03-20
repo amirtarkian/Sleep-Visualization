@@ -57,7 +57,7 @@ final class SyncManager {
 
                 let stats = SessionBuilder.computeStats(startDate: sessionStart, endDate: sessionEnd, stages: stages)
 
-                let biometrics = await fetchBiometrics(from: sessionStart, to: sessionEnd)
+                let (biometrics, rawBiometrics) = await fetchBiometrics(from: sessionStart, to: sessionEnd)
 
                 // Compute sleep midpoint as minutes from midnight
                 let midpoint = sessionStart.addingTimeInterval(sessionEnd.timeIntervalSince(sessionStart) / 2)
@@ -138,10 +138,9 @@ final class SyncManager {
                     try? await supabase.pushSleepSession(payload)
 
                     // Push biometric time-series samples
-                    let biometricPayloads = await buildBiometricSamplePayloads(
+                    let biometricPayloads = buildBiometricSamplePayloads(
                         nightDate: nightDate,
-                        from: sessionStart,
-                        to: sessionEnd
+                        raw: rawBiometrics
                     )
                     if !biometricPayloads.isEmpty {
                         try? await supabase.pushBiometricSamples(biometricPayloads)
@@ -162,10 +161,19 @@ final class SyncManager {
         isSyncing = false
     }
 
-    private func fetchBiometrics(from start: Date, to end: Date) async -> BiometricSummary {
+    private struct RawBiometricSamples {
+        var hr: [(startDate: Date, value: Double)] = []
+        var hrv: [(startDate: Date, value: Double)] = []
+        var spo2: [(startDate: Date, value: Double)] = []
+        var rr: [(startDate: Date, value: Double)] = []
+    }
+
+    private func fetchBiometrics(from start: Date, to end: Date) async -> (BiometricSummary, RawBiometricSamples) {
         var summary = BiometricSummary()
+        var raw = RawBiometricSamples()
 
         if let hrSamples = try? await healthKit.fetchHeartRate(from: start, to: end), !hrSamples.isEmpty {
+            raw.hr = hrSamples.map { (startDate: $0.startDate, value: $0.value) }
             let values = hrSamples.map(\.value)
             summary.avgHeartRate = values.reduce(0, +) / Double(values.count)
             summary.minHeartRate = values.min()
@@ -173,67 +181,61 @@ final class SyncManager {
         }
 
         if let hrvSamples = try? await healthKit.fetchHRV(from: start, to: end), !hrvSamples.isEmpty {
+            raw.hrv = hrvSamples.map { (startDate: $0.startDate, value: $0.value) }
             summary.avgHrv = hrvSamples.map(\.value).reduce(0, +) / Double(hrvSamples.count)
         }
 
         if let spo2Samples = try? await healthKit.fetchSpO2(from: start, to: end), !spo2Samples.isEmpty {
+            raw.spo2 = spo2Samples.map { (startDate: $0.startDate, value: $0.value) }
             summary.avgSpo2 = spo2Samples.map(\.value).reduce(0, +) / Double(spo2Samples.count) * 100
         }
 
         if let rrSamples = try? await healthKit.fetchRespiratoryRate(from: start, to: end), !rrSamples.isEmpty {
+            raw.rr = rrSamples.map { (startDate: $0.startDate, value: $0.value) }
             summary.avgRespiratoryRate = rrSamples.map(\.value).reduce(0, +) / Double(rrSamples.count)
         }
 
-        return summary
+        return (summary, raw)
     }
 
     private func buildBiometricSamplePayloads(
         nightDate: String,
-        from start: Date,
-        to end: Date
-    ) async -> [[String: Any]] {
+        raw: RawBiometricSamples
+    ) -> [[String: Any]] {
         var payloads: [[String: Any]] = []
         let isoFmt = ISO8601DateFormatter()
 
-        if let hrSamples = try? await healthKit.fetchHeartRate(from: start, to: end) {
-            for s in hrSamples {
-                payloads.append([
-                    "session_night_date": nightDate,
-                    "metric_type": "heart_rate",
-                    "timestamp": isoFmt.string(from: s.startDate),
-                    "value": s.value
-                ])
-            }
+        for s in raw.hr {
+            payloads.append([
+                "session_night_date": nightDate,
+                "metric_type": "heart_rate",
+                "timestamp": isoFmt.string(from: s.startDate),
+                "value": s.value
+            ])
         }
-        if let hrvSamples = try? await healthKit.fetchHRV(from: start, to: end) {
-            for s in hrvSamples {
-                payloads.append([
-                    "session_night_date": nightDate,
-                    "metric_type": "hrv",
-                    "timestamp": isoFmt.string(from: s.startDate),
-                    "value": s.value
-                ])
-            }
+        for s in raw.hrv {
+            payloads.append([
+                "session_night_date": nightDate,
+                "metric_type": "hrv",
+                "timestamp": isoFmt.string(from: s.startDate),
+                "value": s.value
+            ])
         }
-        if let spo2Samples = try? await healthKit.fetchSpO2(from: start, to: end) {
-            for s in spo2Samples {
-                payloads.append([
-                    "session_night_date": nightDate,
-                    "metric_type": "spo2",
-                    "timestamp": isoFmt.string(from: s.startDate),
-                    "value": s.value * 100
-                ])
-            }
+        for s in raw.spo2 {
+            payloads.append([
+                "session_night_date": nightDate,
+                "metric_type": "spo2",
+                "timestamp": isoFmt.string(from: s.startDate),
+                "value": s.value * 100
+            ])
         }
-        if let rrSamples = try? await healthKit.fetchRespiratoryRate(from: start, to: end) {
-            for s in rrSamples {
-                payloads.append([
-                    "session_night_date": nightDate,
-                    "metric_type": "respiratory_rate",
-                    "timestamp": isoFmt.string(from: s.startDate),
-                    "value": s.value
-                ])
-            }
+        for s in raw.rr {
+            payloads.append([
+                "session_night_date": nightDate,
+                "metric_type": "respiratory_rate",
+                "timestamp": isoFmt.string(from: s.startDate),
+                "value": s.value
+            ])
         }
         return payloads
     }
