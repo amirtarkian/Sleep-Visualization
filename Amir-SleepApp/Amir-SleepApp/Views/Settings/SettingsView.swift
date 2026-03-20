@@ -87,6 +87,20 @@ struct SettingsView: View {
                                     .foregroundStyle(AppTheme.textTertiary)
                             }
                         }
+                        if let error = syncManager.syncError {
+                            HStack(alignment: .top) {
+                                Image(systemName: "exclamationmark.triangle.fill")
+                                    .foregroundStyle(.red)
+                                Text(error)
+                                    .font(.caption)
+                                    .foregroundStyle(.red)
+                            }
+                            Button {
+                                Task { await syncManager.sync(modelContext: modelContext) }
+                            } label: {
+                                Label("Retry Sync", systemImage: "arrow.clockwise")
+                            }
+                        }
                         Button {
                             showResyncConfirmation = true
                         } label: {

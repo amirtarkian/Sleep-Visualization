@@ -24,6 +24,7 @@ final class SyncManager {
         syncError = nil
 
         do {
+            var pushErrors: [String] = []
             let endDate = Date()
             let startDate = lastSyncDate ?? Calendar.current.date(byAdding: .day, value: -90, to: endDate)!
 
@@ -135,7 +136,11 @@ final class SyncManager {
                         "resting_heart_rate": restingHR,
                         "source_name": "Apple Watch",
                     ]
-                    try? await supabase.pushSleepSession(payload)
+                    do {
+                        try await supabase.pushSleepSession(payload)
+                    } catch {
+                        pushErrors.append("Session \(nightDate): \(error.localizedDescription)")
+                    }
 
                     // Push biometric time-series samples
                     let biometricPayloads = buildBiometricSamplePayloads(
@@ -143,12 +148,20 @@ final class SyncManager {
                         raw: rawBiometrics
                     )
                     if !biometricPayloads.isEmpty {
-                        try? await supabase.pushBiometricSamples(biometricPayloads)
+                        do {
+                            try await supabase.pushBiometricSamples(biometricPayloads)
+                        } catch {
+                            pushErrors.append("Biometrics \(nightDate): \(error.localizedDescription)")
+                        }
                     }
                 }
             }
 
             try await computeReadinessScores(modelContext: modelContext)
+
+            if !pushErrors.isEmpty {
+                syncError = "\(pushErrors.count) push(es) failed: \(pushErrors.first ?? "")"
+            }
 
             try modelContext.save()
             lastSyncDate = endDate
@@ -300,7 +313,11 @@ final class SyncManager {
                 "resting_hr_current": restingHRCurrent,
                 "sleep_score_contribution": sleepScore,
             ]
-            try? await supabase.pushReadinessRecord(payload)
+            do {
+                try await supabase.pushReadinessRecord(payload)
+            } catch {
+                syncError = (syncError ?? "") + "\nReadiness push failed: \(error.localizedDescription)"
+            }
         }
     }
 }
