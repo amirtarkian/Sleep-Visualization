@@ -1,4 +1,5 @@
 import { useTrends } from '../../hooks/useTrends'
+import { useInsights } from '../../hooks/useInsights'
 import { Section } from '../layout/Section'
 import { Card } from '../layout/Card'
 import { EmptyState } from '../shared/EmptyState'
@@ -8,6 +9,8 @@ import { BedtimeScatter } from './BedtimeScatter'
 import { StageStackedArea } from './StageStackedArea'
 import { EfficiencyTrendLine } from './EfficiencyTrendLine'
 import { HeartRateTrend } from './HeartRateTrend'
+import { InsightCards } from './InsightCards'
+import { BiometricCharts } from './BiometricCharts'
 import { bedtimeMinutes, dateToMinutesFromMidnight } from '../../lib/dateUtils'
 import type { SleepSession } from '../../providers/types'
 
@@ -17,6 +20,7 @@ interface TrendsViewProps {
 
 export function TrendsView({ sessions }: TrendsViewProps) {
   const trends = useTrends(sessions)
+  const insights = useInsights(sessions)
 
   if (sessions.length === 0) {
     return (
@@ -57,6 +61,8 @@ export function TrendsView({ sessions }: TrendsViewProps) {
         </div>
       </Section>
 
+      <InsightCards insights={insights} />
+
       <Card>
         <h3 className="text-sm font-medium text-slate-300 mb-3">Sleep Score</h3>
         <ScoreTrendChart data={scoreTrendData} />
@@ -88,6 +94,8 @@ export function TrendsView({ sessions }: TrendsViewProps) {
         <h3 className="text-sm font-medium text-slate-300 mb-3">Heart Rate During Sleep</h3>
         <HeartRateTrend sessions={sessions} />
       </Card>
+
+      <BiometricCharts sessions={sessions} />
     </div>
   )
 }
