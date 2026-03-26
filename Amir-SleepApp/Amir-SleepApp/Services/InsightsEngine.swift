@@ -146,16 +146,18 @@ enum InsightsEngine {
     }
 
     private static func weekendCorrelation(_ sessions: [SleepSession]) -> [Insight] {
+        // nightDate = date sleep started. Fri/Sat nights = weekend nights.
+        // Calendar.weekday: 1=Sun, 2=Mon, ..., 6=Fri, 7=Sat
         let cal = Calendar.current
         let weekday = sessions.filter { s in
             guard let d = dateFromNight(s.nightDate) else { return false }
             let wd = cal.component(.weekday, from: d)
-            return wd >= 2 && wd <= 5
+            return wd >= 1 && wd <= 5 // Sun-Thu nights
         }
         let weekend = sessions.filter { s in
             guard let d = dateFromNight(s.nightDate) else { return false }
             let wd = cal.component(.weekday, from: d)
-            return wd == 6 || wd == 7 || wd == 1
+            return wd == 6 || wd == 7 // Fri-Sat nights
         }
         guard weekday.count >= 3, weekend.count >= 3 else { return [] }
 
@@ -192,6 +194,8 @@ enum InsightsEngine {
         let medDeep = medianValue(pairs.map { $0.deep })
         let high = pairs.filter { $0.deep >= medDeep }
         let low = pairs.filter { $0.deep < medDeep }
+
+        guard !high.isEmpty, !low.isEmpty else { return [] }
 
         let diff = avg(high.map { Double($0.nextScore) }) - avg(low.map { Double($0.nextScore) })
         guard diff >= 3 else { return [] }

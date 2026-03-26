@@ -144,13 +144,14 @@ function consistencyCorrelation(sessions: SleepSession[]): Insight[] {
 }
 
 function weekendCorrelation(sessions: SleepSession[]): Insight[] {
+  // nightDate = date sleep started. Fri/Sat nights = weekend nights.
   const weekday = sessions.filter(s => {
-    const day = new Date(s.nightDate).getDay()
-    return day >= 1 && day <= 4
+    const day = new Date(s.nightDate + 'T00:00:00').getDay()
+    return day >= 0 && day <= 4 // Sun-Thu nights
   })
   const weekend = sessions.filter(s => {
-    const day = new Date(s.nightDate).getDay()
-    return day === 5 || day === 6 || day === 0
+    const day = new Date(s.nightDate + 'T00:00:00').getDay()
+    return day === 5 || day === 6 // Fri-Sat nights
   })
 
   if (weekday.length < 3 || weekend.length < 3) return []
@@ -191,6 +192,8 @@ function deepSleepCorrelation(sessions: SleepSession[]): Insight[] {
   const highDeep = pairs.filter(p => p.deep >= medianDeep)
   const lowDeep = pairs.filter(p => p.deep < medianDeep)
 
+  if (highDeep.length === 0 || lowDeep.length === 0) return []
+
   const highAvg = avg(highDeep.map(p => p.nextScore))
   const lowAvg = avg(lowDeep.map(p => p.nextScore))
   const diff = highAvg - lowAvg
@@ -212,11 +215,11 @@ function deepSleepCorrelation(sessions: SleepSession[]): Insight[] {
 
 function weekendEffect(sessions: SleepSession[]): Insight[] {
   const friSat = sessions.filter(s => {
-    const day = new Date(s.nightDate).getDay()
+    const day = new Date(s.nightDate + 'T00:00:00').getDay()
     return day === 5 || day === 6
   })
   const other = sessions.filter(s => {
-    const day = new Date(s.nightDate).getDay()
+    const day = new Date(s.nightDate + 'T00:00:00').getDay()
     return day !== 5 && day !== 6
   })
 
