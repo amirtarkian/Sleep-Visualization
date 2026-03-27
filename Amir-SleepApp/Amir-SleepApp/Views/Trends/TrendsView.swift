@@ -13,6 +13,10 @@ struct TrendsView: View {
         return allSessions.filter { $0.nightDate >= cutoffString }
     }
 
+    private var insights: [Insight] {
+        InsightsEngine.computeInsights(sessions: filteredSessions)
+    }
+
     var body: some View {
         NavigationStack {
             ScrollView {
@@ -21,10 +25,12 @@ struct TrendsView: View {
                     if filteredSessions.isEmpty {
                         Text("No data for this period").foregroundStyle(AppTheme.textSecondary).padding(.top, 60)
                     } else {
+                        InsightCardsView(insights: insights)
                         ScoreTrendChart(sessions: filteredSessions)
                         DurationBarChart(sessions: filteredSessions)
                         BedtimeChart(sessions: filteredSessions)
                         StageAreaChart(sessions: filteredSessions)
+                        BiometricChartsView(sessions: filteredSessions)
                     }
                 }
                 .padding()
