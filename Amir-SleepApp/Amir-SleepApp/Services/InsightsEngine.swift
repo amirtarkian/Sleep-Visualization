@@ -434,14 +434,13 @@ enum InsightsEngine {
         return (n * sumXY - sumX * sumY) / (n * sumXX - sumX * sumX)
     }
 
-    private static func bedtimeMinutes(_ date: Date) -> Double {
-        let mins = Double(Calendar.current.component(.hour, from: date) * 60 + Calendar.current.component(.minute, from: date))
-        return mins >= 18 * 60 ? mins - 24 * 60 : mins
-    }
+    private static let nightDateFormatter: DateFormatter = {
+        let f = DateFormatter()
+        f.dateFormat = "yyyy-MM-dd"
+        return f
+    }()
 
     private static func dateFromNight(_ nightDate: String) -> Date? {
-        let formatter = DateFormatter()
-        formatter.dateFormat = "yyyy-MM-dd"
-        return formatter.date(from: nightDate)
+        nightDateFormatter.date(from: nightDate)
     }
 }

@@ -1,11 +1,11 @@
 import { Card } from '../layout/Card'
-import type { Insight } from '../../lib/insights'
+import type { Insight, InsightCategory } from '../../lib/insights'
 
 interface InsightCardsProps {
   insights: Insight[]
 }
 
-const CATEGORY_ICONS: Record<string, string> = {
+const CATEGORY_ICONS: Record<InsightCategory, string> = {
   correlation: '\u{1F517}',
   pattern: '\u{1F504}',
   biometric: '\u{1F493}',

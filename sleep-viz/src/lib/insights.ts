@@ -18,17 +18,22 @@ export function computeInsights(sessions: SleepSession[]): Insight[] {
   if (sessions.length < 7) return []
 
   const sorted = [...sessions].sort((a, b) => a.nightDate.localeCompare(b.nightDate))
+  // Pre-compute day-of-week per session to avoid repeated Date allocations
+  const dayOfWeek = new Map<string, number>()
+  for (const s of sorted) {
+    dayOfWeek.set(s.nightDate, new Date(s.nightDate + 'T00:00:00').getDay())
+  }
   const insights: Insight[] = []
 
   // --- Correlations ---
   insights.push(...bedtimeCorrelation(sorted))
   insights.push(...durationCorrelation(sorted))
   insights.push(...consistencyCorrelation(sorted))
-  insights.push(...weekendCorrelation(sorted))
+  insights.push(...weekendCorrelation(sorted, dayOfWeek))
   insights.push(...deepSleepCorrelation(sorted))
 
   // --- Patterns ---
-  insights.push(...weekendEffect(sorted))
+  insights.push(...weekendEffect(sorted, dayOfWeek))
   insights.push(...streakDetection(sorted))
   insights.push(...recoveryPattern(sorted))
   insights.push(...trendMomentum(sorted))
@@ -143,14 +148,14 @@ function consistencyCorrelation(sessions: SleepSession[]): Insight[] {
   }]
 }
 
-function weekendCorrelation(sessions: SleepSession[]): Insight[] {
+function weekendCorrelation(sessions: SleepSession[], dayOfWeek: Map<string, number>): Insight[] {
   // nightDate = date sleep started. Fri/Sat nights = weekend nights.
   const weekday = sessions.filter(s => {
-    const day = new Date(s.nightDate + 'T00:00:00').getDay()
+    const day = dayOfWeek.get(s.nightDate)!
     return day >= 0 && day <= 4 // Sun-Thu nights
   })
   const weekend = sessions.filter(s => {
-    const day = new Date(s.nightDate + 'T00:00:00').getDay()
+    const day = dayOfWeek.get(s.nightDate)!
     return day === 5 || day === 6 // Fri-Sat nights
   })
 
@@ -213,13 +218,13 @@ function deepSleepCorrelation(sessions: SleepSession[]): Insight[] {
 
 // --- Pattern helpers ---
 
-function weekendEffect(sessions: SleepSession[]): Insight[] {
+function weekendEffect(sessions: SleepSession[], dayOfWeek: Map<string, number>): Insight[] {
   const friSat = sessions.filter(s => {
-    const day = new Date(s.nightDate + 'T00:00:00').getDay()
+    const day = dayOfWeek.get(s.nightDate)!
     return day === 5 || day === 6
   })
   const other = sessions.filter(s => {
-    const day = new Date(s.nightDate + 'T00:00:00').getDay()
+    const day = dayOfWeek.get(s.nightDate)!
     return day !== 5 && day !== 6
   })
 
